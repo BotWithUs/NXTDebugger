@@ -99,6 +99,7 @@ void App::Init()
         { "Events",       true,  &panels::DrawEventTail         },
         { "Cache lookup", false, &panels::DrawCacheLookup       },
         { "RPC console",  true,  &panels::DrawRpcConsole        },
+        { "RPC tap",      true,  &panels::DrawRpcTap            },
         { "Log",          true,  &panels::DrawLogPanel          },
     };
     theme::Apply();
