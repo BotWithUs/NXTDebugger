@@ -11,6 +11,7 @@ void DrawSnapshotInspector(app::App &);
 void DrawEntityBrowser    (app::App &);
 void DrawEventTail        (app::App &);
 void DrawCacheLookup      (app::App &);
+void DrawRpcConsole       (app::App &);
 void DrawLogPanel         (app::App &);
 
 }

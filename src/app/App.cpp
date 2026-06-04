@@ -98,6 +98,7 @@ void App::Init()
         { "Entities",     true,  &panels::DrawEntityBrowser     },
         { "Events",       true,  &panels::DrawEventTail         },
         { "Cache lookup", false, &panels::DrawCacheLookup       },
+        { "RPC console",  true,  &panels::DrawRpcConsole        },
         { "Log",          true,  &panels::DrawLogPanel          },
     };
     theme::Apply();
@@ -107,6 +108,14 @@ void App::Update()
 {
     DrainEvents(*this);
     UpdateTickPulse(*this);
+
+    // Implicit dockspace covering the main viewport. PassthruCentralNode keeps
+    // the central area transparent so the GL clear colour shows through when
+    // nothing is docked there; every Begin()/End() in panels becomes a
+    // dockable window automatically.
+    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
+                                 ImGuiDockNodeFlags_PassthruCentralNode);
+
     DrawMenuBar(*this);
 
     for (auto &p : panels)

@@ -19,12 +19,33 @@ if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/ipc/SharedLayout.h)
         "NXTDebugger expects ../NXTLibrary/src/ipc/SharedLayout.h to exist.\\n"
         "Place this project next to the NXTLibrary checkout in the BotWithUs workspace.")
 endif()
+
+# FreeType: build the standalone static library — no zlib / png / harfbuzz /
+# brotli / bzip2 transitive deps. We only need it as ImGui's font rasterizer.
+# Cache vars must be set BEFORE the fetch-content add_subdirectory so they
+# take effect on the configure pass.
+set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
+set(FT_DISABLE_ZLIB      ON  CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2     ON  CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG       ON  CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ  ON  CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI    ON  CACHE BOOL "" FORCE)
 """
 
 # --- Dear ImGui (FetchContent; no CMakeLists, sources spliced into the target) ---
+# Docking branch — pinned to the v1.91.5-docking sibling tag. Same release as
+# the main-branch v1.91.5 but with the docking + multi-viewport additions.
+# Single-window app for now (no viewports enabled), so all dockable windows
+# stay inside the host HWND.
 [fetch-content.imgui]
 git = "https://github.com/ocornut/imgui.git"
-tag = "v1.91.5"
+tag = "v1.91.5-docking"
+shallow = true
+
+# --- FreeType (FetchContent; CMake target `freetype`, linked into the exe) ---
+[fetch-content.freetype]
+git = "https://gitlab.freedesktop.org/freetype/freetype.git"
+tag = "VER-2-13-3"
 shallow = true
 
 # --- nxt_debugger.exe ---
@@ -37,6 +58,7 @@ sources = [
     "src/wire/*.cpp",
     "src/cache/*.cpp",
     "src/log/*.cpp",
+    "src/rpc/*.cpp",
     "src/panels/*.cpp",
 ]
 headers = [
@@ -46,6 +68,7 @@ headers = [
     "src/wire/*.h",
     "src/cache/*.h",
     "src/log/*.h",
+    "src/rpc/*.h",
     "src/panels/*.h",
 ]
 compile-features = ["cxx_std_23"]
@@ -68,9 +91,15 @@ link-libraries = [
 ]
 link-options = ["/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup"]
 
-# Splice vendored ImGui sources into the target and disable /WX narrowly on
-# THOSE files only — our own code keeps warnings-as-errors. This is the
-# improvement over HumanizerLibrary's blanket /WX drop.
+# Splice vendored ImGui sources + the NXTLibrary msgpack codec into the
+# target. Both get /WX narrowed off (vendored / cross-project boundaries
+# don't share our warning posture); our own code keeps warnings-as-errors.
+# This is the improvement over HumanizerLibrary's blanket /WX drop.
+#
+# MsgPack.cpp is included directly (same precedent as the SharedLayout.h
+# header include) — vendoring it would create a second source of truth for
+# the wire codec, exactly the failure mode the workspace's "producer/consumer
+# wire contract" rule warns against.
 cmake-after = """
 set(_imgui_srcs
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -78,10 +107,19 @@ set(_imgui_srcs
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
 target_sources(nxt_debugger PRIVATE ${_imgui_srcs})
 target_include_directories(nxt_debugger PRIVATE
     ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends)
+    ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/freetype)
+target_compile_definitions(nxt_debugger PRIVATE
+    IMGUI_ENABLE_FREETYPE)
+target_link_libraries(nxt_debugger PRIVATE freetype)
 set_source_files_properties(${_imgui_srcs} PROPERTIES COMPILE_OPTIONS "/WX-;/W0")
+
+set(_msgpack_src ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/rpc/MsgPack.cpp)
+target_sources(nxt_debugger PRIVATE ${_msgpack_src})
+set_source_files_properties(${_msgpack_src} PROPERTIES COMPILE_OPTIONS "/WX-")
 """

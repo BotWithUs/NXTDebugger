@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "backends/imgui_impl_win32.h"
+#include "misc/freetype/imgui_freetype.h"
 
 #include <Windows.h>
 #include <ShlObj.h>
@@ -168,20 +169,85 @@ std::string ResolveIniPath()
     return utf8;
 }
 
+// Build an absolute path to the named Windows font (e.g. "segoeui.ttf"). Uses
+// GetWindowsDirectoryW so a non-default Windows install root still resolves.
+std::string ResolveWindowsFontPath(const wchar_t *fontFileName)
+{
+    wchar_t winDir[MAX_PATH];
+    UINT got = GetWindowsDirectoryW(winDir, MAX_PATH);
+    if (got == 0 || got >= MAX_PATH) return {};
+    wchar_t path[MAX_PATH];
+    std::swprintf(path, MAX_PATH, L"%s\\Fonts\\%s", winDir, fontFileName);
+    char utf8[MAX_PATH * 2];
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), nullptr, nullptr);
+    return utf8;
+}
+
+// Returns the DPI scale factor of the system. System DPI awareness is enough
+// for a single-window tool — we don't need per-monitor reconfiguration.
+float QuerySystemDpiScale()
+{
+    HDC screen = GetDC(nullptr);
+    if (!screen) return 1.0f;
+    int dpiX = GetDeviceCaps(screen, LOGPIXELSX);
+    ReleaseDC(nullptr, screen);
+    return (dpiX > 0) ? static_cast<float>(dpiX) / 96.0f : 1.0f;
+}
+
+void InstallFreetypeFont(ImGuiIO &io, float dpiScale)
+{
+    io.Fonts->FontBuilderIO    = ImGuiFreeType::GetBuilderForFreeType();
+    io.Fonts->FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
+
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 1;
+    cfg.PixelSnapH  = false;
+
+    // Base size 16 looks crisp at 100% DPI; scale up linearly for hi-DPI.
+    const float baseSize = 16.0f;
+    const float pixSize  = baseSize * dpiScale;
+
+    std::string segoe = ResolveWindowsFontPath(L"segoeui.ttf");
+    if (!segoe.empty() &&
+        io.Fonts->AddFontFromFileTTF(segoe.c_str(), pixSize, &cfg) != nullptr)
+    {
+        return;
+    }
+    // Fallback chain: Consolas (universal Windows install) → ImGui default.
+    std::string consolas = ResolveWindowsFontPath(L"consola.ttf");
+    if (!consolas.empty() &&
+        io.Fonts->AddFontFromFileTTF(consolas.c_str(), pixSize, &cfg) != nullptr)
+    {
+        return;
+    }
+    io.Fonts->AddFontDefault();
+}
+
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 {
+    // System DPI awareness — the OS tells us the scale once at startup and
+    // doesn't auto-blur our window. We size the font for that scale below.
+    // Safe to call even on Windows versions without the API; the fallback
+    // SetProcessDPIAware is on every Win10+ host.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+
     if (!RegisterWindowClass(inst))
     {
         MessageBoxW(nullptr, L"RegisterClassExW failed", kTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
 
+    const float dpiScale = QuerySystemDpiScale();
+    const int   winW = static_cast<int>(1480 * dpiScale);
+    const int   winH = static_cast<int>(920  * dpiScale);
+
     WGLBoot boot{};
     boot.hwnd = CreateWindowExW(
         0, kClassName, kTitle, WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1480, 920,
+        CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
         nullptr, nullptr, inst, nullptr);
     if (!boot.hwnd)
     {
@@ -202,8 +268,11 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     static std::string iniPath = ResolveIniPath();
     io.IniFilename = iniPath.c_str();
+
+    InstallFreetypeFont(io, dpiScale);
 
     ImGui_ImplWin32_Init(boot.hwnd);
     ImGui_ImplOpenGL3_Init("#version 130");
