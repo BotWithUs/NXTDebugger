@@ -1,0 +1,11 @@
+build/
+cmake-build-*/
+CMakeLists.txt
+_cmkr_*/
+*.vcxproj*
+*.user
+.vs/
+.idea/
+out/
+.cache/
+*.log

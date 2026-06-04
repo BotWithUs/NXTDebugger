@@ -1,0 +1,87 @@
+# cmkr project (https://github.com/build-cpp/cmkr).
+# cmake.toml is the single source of truth; CMakeLists.txt is generated — never hand-edit it.
+# Add a source file under src/ and re-run `cmake -B build` so the glob refreshes.
+
+[cmake]
+version = "3.20"
+
+[project]
+name = "NXTDebugger"
+version = "0.1.0"
+languages = ["CXX"]
+description = "Standalone Win32 observer for the NXTLibrary wire surface"
+
+# Hard-fail at configure if the sibling NXTLibrary headers we directly #include
+# are missing. The error message tells the next person exactly how to fix it.
+cmake-before = """
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/ipc/SharedLayout.h)
+    message(FATAL_ERROR
+        "NXTDebugger expects ../NXTLibrary/src/ipc/SharedLayout.h to exist.\\n"
+        "Place this project next to the NXTLibrary checkout in the BotWithUs workspace.")
+endif()
+"""
+
+# --- Dear ImGui (FetchContent; no CMakeLists, sources spliced into the target) ---
+[fetch-content.imgui]
+git = "https://github.com/ocornut/imgui.git"
+tag = "v1.91.5"
+shallow = true
+
+# --- nxt_debugger.exe ---
+[target.nxt_debugger]
+type = "executable"
+sources = [
+    "src/*.cpp",
+    "src/app/*.cpp",
+    "src/attach/*.cpp",
+    "src/wire/*.cpp",
+    "src/cache/*.cpp",
+    "src/log/*.cpp",
+    "src/panels/*.cpp",
+]
+headers = [
+    "src/*.h",
+    "src/app/*.h",
+    "src/attach/*.h",
+    "src/wire/*.h",
+    "src/cache/*.h",
+    "src/log/*.h",
+    "src/panels/*.h",
+]
+compile-features = ["cxx_std_23"]
+include-directories = [
+    "src",
+    "../NXTLibrary/src",
+    "../NXTCacheLibrary/src/c_api",
+]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "UNICODE",
+    "_UNICODE",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
+link-libraries = [
+    "opengl32", "gdi32", "user32", "shell32", "advapi32", "shlwapi", "psapi",
+]
+link-options = ["/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup"]
+
+# Splice vendored ImGui sources into the target and disable /WX narrowly on
+# THOSE files only — our own code keeps warnings-as-errors. This is the
+# improvement over HumanizerLibrary's blanket /WX drop.
+cmake-after = """
+set(_imgui_srcs
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+target_sources(nxt_debugger PRIVATE ${_imgui_srcs})
+target_include_directories(nxt_debugger PRIVATE
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends)
+set_source_files_properties(${_imgui_srcs} PROPERTIES COMPILE_OPTIONS "/WX-;/W0")
+"""
