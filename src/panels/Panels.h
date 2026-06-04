@@ -13,6 +13,7 @@ void DrawEventTail        (app::App &);
 void DrawCacheLookup      (app::App &);
 void DrawRpcConsole       (app::App &);
 void DrawRpcTap           (app::App &);
+void DrawScriptContext    (app::App &);
 void DrawLogPanel         (app::App &);
 
 }

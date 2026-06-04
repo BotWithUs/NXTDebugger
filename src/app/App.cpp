@@ -37,6 +37,24 @@ void DrainEvents(App &a)
     }
 }
 
+// Match the shared TapClient's connection to the current SHM attach. The
+// per-panel topic subscriptions re-register themselves in their own
+// EnsureConnection helpers when the pid changes.
+void UpdateTapConnection(App &a)
+{
+    DWORD pid = a.session.IsOpen() ? a.session.Pid() : 0;
+    if (pid == a.tapConnectedPid && (pid == 0 || a.tap.IsConnected())) return;
+    if (pid != a.tapConnectedPid)
+    {
+        a.tap.Disconnect();
+        a.tapConnectedPid = pid;
+    }
+    if (pid != 0 && !a.tap.IsConnected())
+    {
+        a.tap.Connect(pid);
+    }
+}
+
 void UpdateTickPulse(App &a)
 {
     float dt = ImGui::GetIO().DeltaTime;
@@ -100,6 +118,7 @@ void App::Init()
         { "Cache lookup", false, &panels::DrawCacheLookup       },
         { "RPC console",  true,  &panels::DrawRpcConsole        },
         { "RPC tap",      true,  &panels::DrawRpcTap            },
+        { "Script ctx",   true,  &panels::DrawScriptContext     },
         { "Log",          true,  &panels::DrawLogPanel          },
     };
     theme::Apply();
@@ -108,6 +127,7 @@ void App::Init()
 void App::Update()
 {
     DrainEvents(*this);
+    UpdateTapConnection(*this);
     UpdateTickPulse(*this);
 
     // Implicit dockspace covering the main viewport. PassthruCentralNode keeps

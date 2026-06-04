@@ -1,6 +1,7 @@
 #pragma once
 #include "attach/Session.h"
 #include "cache/CacheClient.h"
+#include "rpc/TapClient.h"
 #include "wire/EventReader.h"
 
 #include <cstdint>
@@ -26,6 +27,14 @@ struct App
     wire::EventReader     events;
     std::vector<wire::EventRecord> eventBacklog;
     std::vector<Panel>    panels;
+
+    // Single shared pipe-tap connection. Multiple panels (RPC tap,
+    // script context, future broker topics) subscribe distinct topics on
+    // this one connection so the debugger uses one pipe slot for all push
+    // traffic, leaving spares for the RPC console and a second debugger.
+    // Connect / disconnect tracked here in Update() (mirrors SHM attach).
+    rpc::TapClient        tap;
+    DWORD                 tapConnectedPid = 0;
 
     // UI / animation state. Filled from the wire on Update(), read by panels.
     uint64_t              lastTickSeen   = 0;

@@ -222,10 +222,9 @@ bool ParseTap(const uint8_t *bytes, uint32_t len, TapEntry &out)
 
 struct PanelState
 {
-    rpc::TapClient        client;
     std::mutex            queueMx;
     std::deque<TapEntry>  ring;             // FIFO; oldest at front
-    DWORD                 lastAttachedPid = 0;
+    DWORD                 lastSubscribedPid = 0;
     bool                  paused          = false;
     bool                  autoScroll      = true;
     char                  filter[64]      = {};
@@ -259,14 +258,13 @@ std::string PrettyMultiLine(const std::vector<uint8_t> &bytes)
                          1 << 20);    // effectively uncapped
 }
 
-void EnsureConnection(app::App &a, PanelState &s)
+void EnsureSubscription(app::App &a, PanelState &s)
 {
-    DWORD pid = a.session.IsOpen() ? a.session.Pid() : 0;
-    if (pid == s.lastAttachedPid && pid != 0 && s.client.IsConnected()) return;
+    DWORD pid = a.tapConnectedPid;
+    if (pid == s.lastSubscribedPid && (pid == 0 || a.tap.IsConnected())) return;
 
-    if (pid != s.lastAttachedPid)
+    if (pid != s.lastSubscribedPid)
     {
-        s.client.Disconnect();
         {
             std::lock_guard<std::mutex> lk(s.queueMx);
             s.ring.clear();
@@ -274,15 +272,12 @@ void EnsureConnection(app::App &a, PanelState &s)
             s.selectedParamsMl.clear();
             s.selectedReplyMl.clear();
         }
-        s.lastAttachedPid = pid;
+        s.lastSubscribedPid = pid;
     }
-    if (pid != 0 && !s.client.IsConnected())
+    if (pid != 0 && a.tap.IsConnected())
     {
-        if (s.client.Connect(pid))
-        {
-            s.client.Subscribe("rpc.tap",
-                [&s](const uint8_t *data, uint32_t len) { OnTap(s, data, len); });
-        }
+        a.tap.Subscribe("rpc.tap",
+            [&s](const uint8_t *data, uint32_t len) { OnTap(s, data, len); });
     }
 }
 
@@ -338,7 +333,7 @@ void DrawControlBar(app::App &a, PanelState &s, size_t shown, size_t total)
 {
     if (!theme::BeginCard("rpctap.bar", "TAP")) { theme::EndCard(); return; }
 
-    rpc::TapStatus st = s.client.LastStatus();
+    rpc::TapStatus st = a.tap.LastStatus();
     theme::StatusDot(StatusColor(st),
                      st == rpc::TapStatus::Subscribed, a.dotPhase);
     ImGui::SameLine();
@@ -486,7 +481,7 @@ void DrawRpcTap(app::App &a)
     }
 
     PanelState &s = State();
-    EnsureConnection(a, s);
+    EnsureSubscription(a, s);
 
     size_t total;
     {
