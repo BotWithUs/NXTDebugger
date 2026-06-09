@@ -119,6 +119,7 @@ void App::Init()
         { "RPC console",  true,  &panels::DrawRpcConsole        },
         { "RPC tap",      true,  &panels::DrawRpcTap            },
         { "Script ctx",   true,  &panels::DrawScriptContext     },
+        { "Interfaces",   true,  &panels::DrawInterfacePanel    },
         { "Log",          true,  &panels::DrawLogPanel          },
     };
     theme::Apply();

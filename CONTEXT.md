@@ -40,6 +40,17 @@ field names byte-for-byte); the debugger UI uses the names defined here.
 - **Hero stat.** The large-font number + small-font caption combo used to
   give a single number top-of-panel visual weight (tick id, pid, hp, etc.)
   Defined in `app/Theme.h::HeroStat`.
+- **Interface panel.** The Phase 5 three-pane browser
+  (`panels/InterfacePanel.cpp`) for visually walking the live RS3 UI:
+  open interfaces from the snapshot, full component tree from
+  `get_interface_tree`, and the field dump of the selected component.
+  Owns its own pipe-slot — a third sync `RpcClient` alongside the RPC
+  console and the tap.
+- **Pick mode.** The Interface panel's toggle that polls the cursor at
+  5 Hz, sends each cursor sample to the agent's new `find_component_at`
+  RPC, and auto-selects whatever component the agent reports under the
+  pointer. Bounded to one in-flight RPC at a time — moving the mouse
+  faster doesn't queue calls.
 
 ## Reserved for later phases
 

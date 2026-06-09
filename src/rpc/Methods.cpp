@@ -27,6 +27,11 @@ constexpr ParamSpec kComponentParams[] = {
     { "comp_index", ParamKind::Int, 0,    false, nullptr },
 };
 
+constexpr ParamSpec kFindAtParams[] = {
+    { "screen_x", ParamKind::Int, 0, false, nullptr },
+    { "screen_y", ParamKind::Int, 0, false, nullptr },
+};
+
 constexpr ParamSpec kWalkToParams[] = {
     { "x",     ParamKind::Int, 3225, false, nullptr },
     { "y",     ParamKind::Int, 3219, false, nullptr },
@@ -47,6 +52,7 @@ constexpr MethodSpec kMethods[] = {
     { "get_login_state",  "Game state + login progress/status.", kNoParams,       0 },
     { "get_varp",         "Read a varp by id.",                 kVarpParams,      1 },
     { "get_component",    "Single component by (iface, index).", kComponentParams, 2 },
+    { "find_component_at","Deepest visible component at a screen pixel.", kFindAtParams, 2 },
     { "walk_to",          "Submit walk target (x,y,plane).",    kWalkToParams,    3 },
     { "walk_status",      "Current walker status.",             kNoParams,        0 },
     { "queue_action",     "Enqueue a game action.",             kQueueActionParams, 4 },
