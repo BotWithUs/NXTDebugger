@@ -11,6 +11,8 @@ void DrawSnapshotInspector(app::App &);
 void DrawEntityBrowser    (app::App &);
 void DrawEventTail        (app::App &);
 void DrawCacheLookup      (app::App &);
+void DrawCacheBrowser     (app::App &);
+void DrawCs2Script        (app::App &);
 void DrawRpcConsole       (app::App &);
 void DrawRpcTap           (app::App &);
 void DrawScriptContext    (app::App &);

@@ -1,6 +1,7 @@
 #pragma once
 #include "attach/Session.h"
 #include "cache/CacheClient.h"
+#include "cs2/Cs2Index.h"
 #include "rpc/TapClient.h"
 #include "wire/EventReader.h"
 
@@ -27,6 +28,14 @@ struct App
     wire::EventReader     events;
     std::vector<wire::EventRecord> eventBacklog;
     std::vector<Panel>    panels;
+
+    // CS2 disassembly cross-reference index (id -> referencing script ids),
+    // built off the on-disk cs2_asm corpus. Shared by the Cache Browser's xref
+    // card and the CS2 script viewer. `cs2RequestedScript` is the cross-panel
+    // hand-off: the xref card writes a script id, the viewer consumes it.
+    cs2::Cs2Index         cs2;
+    int                   cs2RequestedScript    = -1;
+    int                   cs2RequestedHighlight = -1;   // id to highlight in the asm
 
     // Single shared pipe-tap connection. Multiple panels (RPC tap,
     // script context, future broker topics) subscribe distinct topics on

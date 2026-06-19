@@ -116,6 +116,8 @@ void App::Init()
         { "Entities",     true,  &panels::DrawEntityBrowser     },
         { "Events",       true,  &panels::DrawEventTail         },
         { "Cache lookup", false, &panels::DrawCacheLookup       },
+        { "Cache Browser",true,  &panels::DrawCacheBrowser      },
+        { "CS2 script",   true,  &panels::DrawCs2Script         },
         { "RPC console",  true,  &panels::DrawRpcConsole        },
         { "RPC tap",      true,  &panels::DrawRpcTap            },
         { "Script ctx",   true,  &panels::DrawScriptContext     },
