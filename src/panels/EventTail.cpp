@@ -37,6 +37,7 @@ ImU32 EventColor(nxt::ipc::EventType t)
         case kEventHitmark:
         case kEventHeadbar:          return theme::kBad;
         case kEventSpotAnim:         return theme::kAccent;
+        case kEventRadioGroupSelect: return theme::kInfo;
         default:                     return theme::kTextDim;
     }
 }
@@ -124,6 +125,14 @@ void FormatBody(const wire::EventRecord &r, char *out, size_t n)
             std::snprintf(out, n, "tgt %d/%d  dmg %d  type %d",
                           b->targetServerIndex, int(b->targetType),
                           b->damage, b->hitmarkType);
+            break;
+        }
+        case kEventRadioGroupSelect:
+        {
+            if (r.bodyLen < sizeof(RadioGroupSelectBody)) break;
+            auto *b = reinterpret_cast<const RadioGroupSelectBody *>(r.body);
+            std::snprintf(out, n, "iface %d  comp %d  sub %d  val %d  op %d",
+                          b->ifaceId, b->componentId, b->subId, b->value, b->opcode);
             break;
         }
         default:

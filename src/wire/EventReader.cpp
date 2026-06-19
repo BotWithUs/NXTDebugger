@@ -81,6 +81,7 @@ const char *EventTypeName(EventType t)
         case kEventHitmark:          return "hitmark";
         case kEventHeadbar:          return "headbar";
         case kEventSpotAnim:         return "spotanim";
+        case kEventRadioGroupSelect: return "radio";
         default:                     return "?";
     }
 }
