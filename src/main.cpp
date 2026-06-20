@@ -1,6 +1,7 @@
 #include "app/App.h"
 #include "app/Theme.h"
 #include "log/Log.h"
+#include "overlay/OverlayWindow.h"
 
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -150,8 +151,15 @@ void ShutdownWGL(WGLBoot &b)
     }
 }
 
-std::string ResolveIniPath()
+// Resolve the persisted ImGui ini path. `outExisted` reports whether the file
+// was already on disk — false means a first run, which gets the curated default
+// dock layout instead of a restored (nonexistent) one.
+std::string ResolveIniPath(bool *outExisted)
 {
+    if (outExisted)
+    {
+        *outExisted = false;
+    }
     wchar_t local[MAX_PATH];
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local)))
     {
@@ -163,6 +171,10 @@ std::string ResolveIniPath()
 
     wchar_t path[MAX_PATH];
     std::swprintf(path, MAX_PATH, L"%s\\imgui.ini", dir);
+    if (outExisted)
+    {
+        *outExisted = (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
+    }
 
     char utf8[MAX_PATH * 2];
     WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), nullptr, nullptr);
@@ -239,6 +251,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         MessageBoxW(nullptr, L"RegisterClassExW failed", kTitle, MB_OK | MB_ICONERROR);
         return 1;
     }
+    // Separate class for the transparent interface overlay (see overlay/).
+    // Non-fatal if it fails — the overlay simply won't create.
+    nxtdbg::overlay::RegisterWindowClass(inst);
 
     const float dpiScale = QuerySystemDpiScale();
     const int   winW = static_cast<int>(1480 * dpiScale);
@@ -269,7 +284,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    static std::string iniPath = ResolveIniPath();
+    bool iniExisted = false;
+    static std::string iniPath = ResolveIniPath(&iniExisted);
     io.IniFilename = iniPath.c_str();
 
     InstallFreetypeFont(io, dpiScale);
@@ -280,6 +296,15 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     nxtdbg::log::LogInfo(L"NXTDebugger ready");
     nxtdbg::app::App app;
     app.Init();
+
+    // First run (no saved layout) gets the curated default dock layout. Existing
+    // users keep their saved arrangement and can re-apply via Window > Reset layout.
+    if (!iniExisted)
+    {
+        app.requestDefaultLayout = true;
+    }
+
+    nxtdbg::overlay::OverlayWindow overlay{};
 
     bool running = true;
     while (running)
@@ -308,13 +333,44 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SwapBuffers(boot.dc);
+
+        // External interface overlay — a separate transparent, click-through,
+        // topmost window with its own GL + ImGui context. Lazily created when
+        // enabled and attached, destroyed when disabled or on a pid change. It
+        // reads app.interfaceView read-only (no pipe, no RPC) and restores the
+        // main GL + ImGui current state before returning.
+        if (app.overlayEnabled && app.session.IsOpen())
+        {
+            if (nxtdbg::overlay::IsCreated(overlay)
+                && overlay.gamePid != app.session.Pid())
+            {
+                nxtdbg::overlay::Destroy(overlay);
+            }
+            if (!nxtdbg::overlay::IsCreated(overlay))
+            {
+                if (!nxtdbg::overlay::Create(overlay, inst, app.session.Pid()))
+                {
+                    app.overlayEnabled = false;   // creation failed; stop retrying
+                }
+            }
+            nxtdbg::overlay::RenderFrame(overlay, app);
+        }
+        else if (nxtdbg::overlay::IsCreated(overlay))
+        {
+            nxtdbg::overlay::Destroy(overlay);
+        }
     }
 
+    if (nxtdbg::overlay::IsCreated(overlay))
+    {
+        nxtdbg::overlay::Destroy(overlay);
+    }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
     ShutdownWGL(boot);
     DestroyWindow(boot.hwnd);
     UnregisterClassW(kClassName, inst);
+    nxtdbg::overlay::UnregisterWindowClass(inst);
     return 0;
 }

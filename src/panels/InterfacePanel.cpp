@@ -668,7 +668,7 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
 void DrawPaneOpenIfaces(app::App &a, PanelState &s,
                         const int32_t *open, uint32_t openCount)
 {
-    if (!theme::BeginCard("iface.open", "OPEN INTERFACES")) { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true)) { theme::EndCard(); return; }
 
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##ifacefilter", "filter (id or name)",
@@ -775,7 +775,7 @@ void DrawTreeNodeRow(app::App &a, PanelState &s, size_t i)
 
 void DrawPaneTree(app::App &a, PanelState &s)
 {
-    if (!theme::BeginCard("iface.tree", "COMPONENT TREE")) { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.tree", "COMPONENT TREE", theme::kAccent, true)) { theme::EndCard(); return; }
 
     DrawTreeControls(s);
 
@@ -934,6 +934,36 @@ void DrawPaneSelected(app::App &a, PanelState &s)
 // Per-frame top-level update + layout
 // ---------------------------------------------------------------------------
 
+// Mirror the box-relevant slice of the freshly-fetched tree into the shared
+// App view-model so the external overlay can paint it. Sole writer of
+// app::App::interfaceView. Cheap: a shallow copy of a few hundred small PODs,
+// piggybacking on data the panel already fetched — no extra RPC.
+void PublishOverlayView(app::App &a, PanelState &s)
+{
+    app::InterfaceView &v = a.interfaceView;
+    v.iface      = s.selectedIface;
+    v.pickActive = s.pickActive;
+    v.hoverComp  = s.selectedValid ? s.selected.comp : -1;
+    v.boxes.clear();
+    v.boxes.reserve(s.tree.size());
+    for (const Comp &c : s.tree)
+    {
+        if (c.hidden == 1) continue;   // overlay paints visible nodes only
+        app::OverlayBox b;
+        b.x        = c.x;
+        b.y        = c.y;
+        b.w        = c.w;
+        b.h        = c.h;
+        b.category = c.category;
+        b.comp     = c.comp;
+        b.hidden   = c.hidden;
+        std::snprintf(b.label, sizeof(b.label), "%d %s",
+                      c.comp, CategoryName(c.category));
+        v.boxes.push_back(b);
+    }
+    ++v.rev;
+}
+
 void MaybeAutoRefresh(app::App &a, PanelState &s)
 {
     if (!s.autoRefresh) return;
@@ -984,10 +1014,18 @@ void DrawInterfacePanel(app::App &a)
     }
     MaybeAutoRefresh(a, s);
     UpdatePickMode(a, s);
+    PublishOverlayView(a, s);
 
-    const float fs = ImGui::GetFontSize();
-    const float colA = fs * 22;
-    const float colB = fs * 40;
+    // Pane widths: cap at comfortable em widths on a wide window, but shrink to
+    // a fraction of the available width when the window is narrow — docked, or
+    // hi-DPI where GetFontSize() is already ~2x and fs*22 + fs*40 alone can
+    // exceed the whole window. Without this the tree + selected panes render
+    // off the right edge and only Open Interfaces is visible. paneC takes the
+    // remainder, floored so it never collapses to nothing.
+    const float fs    = ImGui::GetFontSize();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float colA  = std::min(fs * 22.0f, avail * 0.28f);
+    const float colB  = std::min(fs * 40.0f, avail * 0.44f);
 
     ImGui::BeginChild("##paneA", ImVec2(colA, 0), 0);
     DrawPaneOpenIfaces(a, s, open, openCount);

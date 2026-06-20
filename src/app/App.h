@@ -1,4 +1,5 @@
 #pragma once
+#include "app/InterfaceView.h"
 #include "attach/Session.h"
 #include "cache/CacheClient.h"
 #include "cs2/Cs2Index.h"
@@ -52,6 +53,21 @@ struct App
     bool                  paused         = false;
     bool                  autoScrollLog  = true;
     bool                  autoScrollEvts = true;
+
+    // Set true to (re)apply the curated default dock layout on the next frame:
+    // by main.cpp on first run (no saved imgui.ini) and by Window > Reset layout.
+    // Consumed in Update() once the dockspace exists, before panels are drawn.
+    bool                  requestDefaultLayout = false;
+
+    // External interface overlay. The Interfaces panel publishes the selected
+    // interface's component boxes into `interfaceView`; main.cpp drives a
+    // separate transparent, click-through, topmost OverlayWindow that paints
+    // them on top of the live game. The overlay reads this read-only — it opens
+    // no pipe and adds no RPC traffic (it rides the panel's existing fetch).
+    InterfaceView         interfaceView;
+    bool                  overlayEnabled       = false;
+    bool                  overlayShowAllLabels = false;
+    bool                  overlayFollowFg      = true;   // hide when game unfocused
 
     void Init();
     void Update();   // called once per frame after ImGui::NewFrame()
