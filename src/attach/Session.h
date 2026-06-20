@@ -10,7 +10,7 @@ namespace nxtdbg::attach
 // Compile-time pin: a consumer-side build that drifted from the producer
 // fails to build instead of misreading bytes at runtime. Bumped together
 // with kProtocolVersion in NXTLibrary/src/ipc/SharedLayout.h.
-static_assert(nxt::ipc::kProtocolVersion == 15,
+static_assert(nxt::ipc::kProtocolVersion == 16,
               "Rebuild NXTDebugger against current NXTLibrary wire");
 
 // RAII over Local\nxt_snapshot_<pid>. Move-only.
