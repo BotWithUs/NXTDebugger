@@ -668,7 +668,8 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
 void DrawPaneOpenIfaces(app::App &a, PanelState &s,
                         const int32_t *open, uint32_t openCount)
 {
-    if (!theme::BeginCard("iface.open", "OPEN INTERFACES")) { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true))
+    { theme::EndCard(); return; }
 
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##ifacefilter", "filter (id or name)",
@@ -775,7 +776,8 @@ void DrawTreeNodeRow(app::App &a, PanelState &s, size_t i)
 
 void DrawPaneTree(app::App &a, PanelState &s)
 {
-    if (!theme::BeginCard("iface.tree", "COMPONENT TREE")) { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.tree", "COMPONENT TREE", theme::kAccent, true))
+    { theme::EndCard(); return; }
 
     DrawTreeControls(s);
 
@@ -912,7 +914,8 @@ void DrawSelectedActions(app::App &a, PanelState &s)
 
 void DrawPaneSelected(app::App &a, PanelState &s)
 {
-    if (!theme::BeginCard("iface.sel", "SELECTED COMPONENT")) { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.sel", "SELECTED COMPONENT", theme::kAccent, true))
+    { theme::EndCard(); return; }
     if (!s.selectedValid)
     {
         ImGui::TextDisabled("(no selection)");

@@ -35,8 +35,11 @@ void Apply();
 //
 // Padded child region with a left accent stripe + bold title at the top.
 // Pair every BeginCard with EndCard. Returns false if the child is clipped
-// (caller MUST still call EndCard for stack discipline).
-bool BeginCard(const char *id, const char *title, ImU32 stripeCol = kAccent);
+// (caller MUST still call EndCard for stack discipline). Default cards
+// auto-size their height to content (compact stats stack); pass fillY=true
+// when the card hosts a scrolling list that should grow to fill the parent.
+bool BeginCard(const char *id, const char *title, ImU32 stripeCol = kAccent,
+               bool fillY = false);
 void EndCard();
 
 // --- Inline primitives -----------------------------------------------------
