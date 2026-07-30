@@ -1,0 +1,21 @@
+{
+  "archive": 96,
+  "type": "ui_anim_curve",
+  "count": 14,
+  "entries": {
+    "1": "TEST_UIANIMS_LINEAR",
+    "2": "TEST_UIANIMS_INOUT_SINE",
+    "3": "TEST_UIANIMS_LINEAR_CHAIN",
+    "4": "TEST_UIANIMS_LINEAR_SIMPLE",
+    "5": "TEST_UIANIMS_LINEAR_SIMPLE_CONVERTED",
+    "6": "TEST_UIANIMS_EASE_OUT_ELASTIC",
+    "7": "TEST_UIANIMS_CUBIC_OUT",
+    "8": "LINEAR",
+    "9": "INOUT_SINE",
+    "10": "LINEAR_CHAIN",
+    "11": "LINEAR_SIMPLE",
+    "12": "LINEAR_SIMPLE_CONVERTED",
+    "13": "EASE_OUT_ELASTIC",
+    "14": "CUBIC_OUT"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "archive": 80,
+  "type": "var_player_group",
+  "count": 3,
+  "entries": {
+    "16": "GROUP_TYPE",
+    "17": "GROUP_WANTS_MEMBERS",
+    "21": "GROUP_LOOTSHARE"
+  }
+}

@@ -3,6 +3,8 @@
 #include "attach/Session.h"
 #include "cache/CacheClient.h"
 #include "cs2/Cs2Index.h"
+#include "gameval/GameVal.h"
+#include "rpc/RpcClient.h"
 #include "rpc/TapClient.h"
 #include "wire/EventReader.h"
 
@@ -26,6 +28,10 @@ struct App
 {
     attach::Session       session;
     cache::CacheClient    cache;
+    // Bundled gameval id -> symbolic-name tables (resources/gameval/*.json).
+    // Fallback label wherever the cache has no display name — used by the cache
+    // panels, the entity browser and the interface panel.
+    gameval::GameVal      gameval;
     wire::EventReader     events;
     std::vector<wire::EventRecord> eventBacklog;
     std::vector<Panel>    panels;
@@ -45,6 +51,17 @@ struct App
     // Connect / disconnect tracked here in Update() (mirrors SHM attach).
     rpc::TapClient        tap;
     DWORD                 tapConnectedPid = 0;
+
+    // Single shared synchronous request/reply RPC client. Every panel that
+    // issues round-trip RPCs (Interfaces, Var Watcher, Obj Vars, Action
+    // History, Session Health) calls through this one client so the debugger
+    // spends a single pipe slot on all of them — same rationale as the shared
+    // tap above. Connect / disconnect tracked here in Update()
+    // (UpdateRpcConnection), mirroring the SHM attach. RpcClient serialises one
+    // Call at a time on the UI thread, so sharing it across panels in a frame
+    // is safe by construction.
+    rpc::RpcClient        rpc;
+    DWORD                 rpcConnectedPid = 0;
 
     // UI / animation state. Filled from the wire on Update(), read by panels.
     uint64_t              lastTickSeen   = 0;

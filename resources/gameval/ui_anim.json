@@ -1,0 +1,23 @@
+{
+  "archive": 97,
+  "type": "ui_anim",
+  "count": 16,
+  "entries": {
+    "1": "TEST_UIANIMS_PULSE",
+    "2": "TEST_UIANIMS_RESIZE",
+    "3": "TEST_UIANIMS_COLOURCHANGE",
+    "4": "TEST_UIANIMS_MULTIPLYALPHA",
+    "5": "SUBTLE_FADE",
+    "6": "PARTIAL_FADE_IN",
+    "7": "PARTIAL_FADE_OUT_FULL",
+    "8": "FULL_FADE_IN",
+    "9": "FULL_FADE_OUT",
+    "10": "PARTIAL_FADE_IN_OUT",
+    "11": "PARTIAL_FADE_OUT_IN",
+    "12": "FADE_QUICK_IN_SLOW_OUT",
+    "13": "PARTIAL_EXPAND_DEFLATE",
+    "14": "ANIM_MOVE_NORTH_EAST",
+    "15": "ANIM_MOVE_NORTH_WEST",
+    "16": "ANIM_MOVE_NORTH_WOBBLE"
+  }
+}

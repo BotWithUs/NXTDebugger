@@ -335,7 +335,7 @@ void DrawBoxes(app::App &a)
         {
             continue;
         }
-        if (b.comp == v.hoverComp && v.hoverComp >= 0)
+        if (v.hoverComp >= 0 && b.comp == v.hoverComp && b.sub == v.hoverSub)
         {
             hoverIdx = static_cast<int>(i);
             continue;

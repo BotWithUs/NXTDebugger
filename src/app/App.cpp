@@ -57,6 +57,29 @@ void UpdateTapConnection(App &a)
     }
 }
 
+// Match the shared synchronous RPC client to the current SHM attach. Mirrors
+// UpdateTapConnection, but for the request/reply pipe used by the Interfaces,
+// Var Watcher, Obj Vars, Action History and Session Health panels — they all
+// share this one connection so the debugger uses a single pipe slot for every
+// round-trip RPC, leaving headroom under kPipeMaxInstances.
+void UpdateRpcConnection(App &a)
+{
+    DWORD pid = a.session.IsOpen() ? a.session.Pid() : 0;
+    if (pid == a.rpcConnectedPid && (pid == 0 || a.rpc.IsConnected()))
+    {
+        return;
+    }
+    if (pid != a.rpcConnectedPid)
+    {
+        a.rpc.Disconnect();
+        a.rpcConnectedPid = pid;
+    }
+    if (pid != 0 && !a.rpc.IsConnected())
+    {
+        a.rpc.Connect(pid);
+    }
+}
+
 void UpdateTickPulse(App &a)
 {
     float dt = ImGui::GetIO().DeltaTime;
@@ -86,7 +109,7 @@ void UpdateTickPulse(App &a)
 // (cache tools, cs2, the RPC stream panels) starts closed, one click away in
 // the View menu. Single source of truth for both Init and Reset layout.
 constexpr const char *kDefaultOpenPanels[] = {
-    "Attach", "Snapshot", "Player", "Entities", "Events", "Log", "Interfaces",
+    "Attach", "Snapshot", "Player", "Entities", "Inventory", "Events", "Log", "Interfaces",
 };
 
 bool IsDefaultOpen(const char *name)
@@ -131,6 +154,7 @@ void BuildDefaultLayout(ImGuiID dockId)
     // Centre — the working surface (hero), specialised viewers tabbed behind it.
     ImGui::DockBuilderDockWindow("Interfaces",    center);
     ImGui::DockBuilderDockWindow("Entities",      center);
+    ImGui::DockBuilderDockWindow("Inventory",     center);
     ImGui::DockBuilderDockWindow("Cache Browser", center);
     ImGui::DockBuilderDockWindow("CS2 script",    center);
 
@@ -138,6 +162,8 @@ void BuildDefaultLayout(ImGuiID dockId)
     ImGui::DockBuilderDockWindow("Player",         right);
     ImGui::DockBuilderDockWindow("Snapshot",       right);
     ImGui::DockBuilderDockWindow("Script Context", right);
+    ImGui::DockBuilderDockWindow("Var Watcher",    right);
+    ImGui::DockBuilderDockWindow("Session",        right);
 
     // Bottom — streaming / log surfaces.
     ImGui::DockBuilderDockWindow("Log",         bottom);
@@ -218,6 +244,7 @@ void App::Init()
         { "Player",       false, &panels::DrawPlayerState       },
         { "Snapshot",     false, &panels::DrawSnapshotInspector },
         { "Entities",     false, &panels::DrawEntityBrowser     },
+        { "Inventory",    false, &panels::DrawInventoryPanel    },
         { "Events",       false, &panels::DrawEventTail         },
         { "Cache lookup", false, &panels::DrawCacheLookup       },
         { "Cache Browser",false, &panels::DrawCacheBrowser      },
@@ -226,9 +253,12 @@ void App::Init()
         { "RPC tap",      false, &panels::DrawRpcTap            },
         { "Script ctx",   false, &panels::DrawScriptContext     },
         { "Interfaces",   false, &panels::DrawInterfacePanel    },
+        { "Var Watcher",  false, &panels::DrawVarWatcher        },
+        { "Session",      false, &panels::DrawSessionHealth     },
         { "Log",          false, &panels::DrawLogPanel          },
     };
     ApplyDefaultVisibility(*this);
+    gameval.Init();
     theme::Apply();
 }
 
@@ -236,6 +266,7 @@ void App::Update()
 {
     DrainEvents(*this);
     UpdateTapConnection(*this);
+    UpdateRpcConnection(*this);
     UpdateTickPulse(*this);
 
     // Implicit dockspace covering the main viewport. PassthruCentralNode keeps

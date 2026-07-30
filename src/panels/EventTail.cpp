@@ -23,9 +23,13 @@ ImU32 EventColor(nxt::ipc::EventType t)
     {
         case kEventTick:             return theme::kTextDim;
         case kEventLoginStateChange: return theme::kInfo;
+        case kEventTokenRefreshFired:  return theme::kWarn;   // kickoff posted, awaiting reply
+        case kEventTokenRefreshed:     return theme::kGood;   // fresh access_token landed
+        case kEventTokenRefreshFailed: return theme::kBad;    // stuck past deadline
         case kEventVarChange:
         case kEventVarbitChange:
         case kEventVarcChange:       return theme::kInfo;
+        case kEventObjVarChange:     return theme::kInfo;
         case kEventChatMessage:      return theme::kTextHi;
         case kEventKeyInput:         return theme::kAccent;
         case kEventActionExecuted:   return theme::kAccent;
@@ -62,6 +66,27 @@ void FormatBody(const wire::EventRecord &r, char *out, size_t n)
             std::snprintf(out, n, "%d", b->tick);
             break;
         }
+        case kEventTokenRefreshFired:
+        {
+            if (r.bodyLen < sizeof(TokenRefreshFiredBody)) break;
+            auto *b = reinterpret_cast<const TokenRefreshFiredBody *>(r.body);
+            std::snprintf(out, n, "expiry %llu  (%lld s left at fire)",
+                          static_cast<unsigned long long>(b->expirySec),
+                          static_cast<long long>(b->secondsRemainingAtFire));
+            break;
+        }
+        case kEventTokenRefreshed:
+        {
+            if (r.bodyLen < sizeof(TokenRefreshedBody)) break;
+            auto *b = reinterpret_cast<const TokenRefreshedBody *>(r.body);
+            std::snprintf(out, n, "expiry %llu  (+%lld s)",
+                          static_cast<unsigned long long>(b->expirySec),
+                          static_cast<long long>(b->secondsUntilExpiry));
+            break;
+        }
+        case kEventTokenRefreshFailed:
+            std::snprintf(out, n, "refresh failed");   // body-less (slot.bodyLen == 0)
+            break;
         case kEventVarChange:
         case kEventVarbitChange:
         case kEventVarcChange:
@@ -69,6 +94,14 @@ void FormatBody(const wire::EventRecord &r, char *out, size_t n)
             if (r.bodyLen < sizeof(VarChangeBody)) break;
             auto *b = reinterpret_cast<const VarChangeBody *>(r.body);
             std::snprintf(out, n, "id %d  %d -> %d", b->varpId, b->oldValue, b->newValue);
+            break;
+        }
+        case kEventObjVarChange:
+        {
+            if (r.bodyLen < sizeof(ObjVarChangeBody)) break;
+            auto *b = reinterpret_cast<const ObjVarChangeBody *>(r.body);
+            std::snprintf(out, n, "inv %d  slot %d  var %d  %d -> %d",
+                          b->invId, b->slot, b->varId, b->oldValue, b->newValue);
             break;
         }
         case kEventChatMessage:
@@ -125,6 +158,31 @@ void FormatBody(const wire::EventRecord &r, char *out, size_t n)
             std::snprintf(out, n, "tgt %d/%d  dmg %d  type %d",
                           b->targetServerIndex, int(b->targetType),
                           b->damage, b->hitmarkType);
+            break;
+        }
+        case kEventHeadbar:
+        {
+            if (r.bodyLen < sizeof(HeadbarBody)) break;
+            auto *b = reinterpret_cast<const HeadbarBody *>(r.body);
+            std::snprintf(out, n, "tgt %d/%d  type %d  val %d",
+                          b->targetServerIndex, int(b->targetType),
+                          b->headbarType, b->value);
+            break;
+        }
+        case kEventSpotAnim:
+        {
+            if (r.bodyLen < sizeof(SpotAnimBody)) break;
+            auto *b = reinterpret_cast<const SpotAnimBody *>(r.body);
+            if (b->targetServerIndex >= 0)
+            {
+                std::snprintf(out, n, "tgt %d/%d  gfx %d",
+                              b->targetServerIndex, int(b->targetType), b->spotAnimId);
+            }
+            else
+            {
+                std::snprintf(out, n, "(%d, %d) p%d  gfx %d",
+                              b->tileX, b->tileY, int(b->plane), b->spotAnimId);
+            }
             break;
         }
         case kEventRadioGroupSelect:

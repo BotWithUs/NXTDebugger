@@ -57,6 +57,7 @@ sources = [
     "src/attach/*.cpp",
     "src/wire/*.cpp",
     "src/cache/*.cpp",
+    "src/gameval/*.cpp",
     "src/cs2/*.cpp",
     "src/render/*.cpp",
     "src/log/*.cpp",
@@ -70,6 +71,7 @@ headers = [
     "src/attach/*.h",
     "src/wire/*.h",
     "src/cache/*.h",
+    "src/gameval/*.h",
     "src/cs2/*.h",
     "src/render/*.h",
     "src/log/*.h",
@@ -133,4 +135,14 @@ set_source_files_properties(${_imgui_srcs} PROPERTIES COMPILE_OPTIONS "/WX-;/W0"
 set(_msgpack_src ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/rpc/MsgPack.cpp)
 target_sources(nxt_debugger PRIVATE ${_msgpack_src})
 set_source_files_properties(${_msgpack_src} PROPERTIES COMPILE_OPTIONS "/WX-")
+
+# Ship the bundled gameval id->name tables next to the exe. The GameVal module
+# resolves resources/gameval/ relative to the running exe (GetModuleFileNameW),
+# so they must sit beside nxt_debugger.exe. First resource-bundling step in this
+# project — mirrors the "NXTCache.dll lives next to the exe" convention.
+add_custom_command(TARGET nxt_debugger POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/resources
+            $<TARGET_FILE_DIR:nxt_debugger>/resources
+    COMMENT "Copying resources/ next to nxt_debugger.exe")
 """

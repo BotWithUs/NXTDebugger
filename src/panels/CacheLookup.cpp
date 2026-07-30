@@ -22,16 +22,33 @@ const char *kTypes[] = {
     "struct", "inv", "param", "quest",
 };
 
+bool DirExists(const wchar_t *path)
+{
+    DWORD attr = GetFileAttributesW(path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 void DefaultCachePath(wchar_t *out, size_t n)
 {
+    // Standard Jagex Launcher cache root (ProgramData) first, then the older
+    // LOCALAPPDATA path; fall back to ProgramData when neither exists.
+    wchar_t progData[MAX_PATH];
+    std::swprintf(progData, MAX_PATH, L"%s", L"C:\\ProgramData\\Jagex\\RuneScape");
+
+    wchar_t localCache[MAX_PATH] = {};
     wchar_t local[MAX_PATH];
-    DWORD got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    if (got == 0 || got >= MAX_PATH)
+    DWORD   got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (got != 0 && got < MAX_PATH)
     {
-        std::swprintf(out, n, L"%s", L"C:\\");
+        std::swprintf(localCache, MAX_PATH, L"%s\\Jagex\\RuneScape\\Cache", local);
+    }
+
+    if (!DirExists(progData) && localCache[0] && DirExists(localCache))
+    {
+        std::swprintf(out, n, L"%s", localCache);
         return;
     }
-    std::swprintf(out, n, L"%s\\Jagex\\RuneScape\\Cache", local);
+    std::swprintf(out, n, L"%s", progData);
 }
 
 void DrawOpenCard(app::App &a)
@@ -124,6 +141,14 @@ void DrawLookupCard(app::App &a, std::string &result)
     if (disabled)
     {
         ImGui::EndDisabled();
+    }
+    // Bundled gameval symbolic name for the current type/id (updates live with
+    // the id input) — shown above the decoded JSON below.
+    if (const char *gv = a.gameval.NameForCacheType(kTypes[typeIdx], id))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
+        ImGui::Text("gameval: %s", gv);
+        ImGui::PopStyleColor();
     }
     theme::EndCard();
 }

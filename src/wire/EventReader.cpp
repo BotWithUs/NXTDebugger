@@ -67,9 +67,13 @@ const char *EventTypeName(EventType t)
         case kEventNone:             return "none";
         case kEventLoginStateChange: return "login_state";
         case kEventTick:             return "tick";
+        case kEventTokenRefreshFired:  return "token_fired";
+        case kEventTokenRefreshed:     return "token_refreshed";
+        case kEventTokenRefreshFailed: return "token_failed";
         case kEventVarChange:        return "var";
         case kEventVarbitChange:     return "varbit";
         case kEventVarcChange:       return "varc";
+        case kEventObjVarChange:     return "obj_var";
         case kEventChatMessage:      return "chat";
         case kEventKeyInput:         return "key";
         case kEventActionExecuted:   return "action";

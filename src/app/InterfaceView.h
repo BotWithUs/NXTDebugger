@@ -19,8 +19,9 @@ struct OverlayBox
     int32_t h        = 0;
     int32_t category = 0;    // WireCategory, drives the outline style
     int32_t comp     = -1;   // component id — label + hover match
+    int32_t sub      = -1;   // sub-component index (-1 top-level); paired with comp
     int32_t hidden   = -1;   // -1 unsupported (treat visible) / 0 visible / 1 hidden
-    char    label[48] = {};  // precomputed "<comp> <Category>"
+    char    label[48] = {};  // precomputed "<comp>[\xC2\xB7<sub>] <Category>"
 };
 
 // Shared view-model of the currently selected interface. The Interfaces panel
@@ -33,6 +34,7 @@ struct InterfaceView
     int32_t                 iface      = -1;
     std::vector<OverlayBox> boxes;
     int32_t                 hoverComp  = -1;    // picked/selected comp id, -1 if none
+    int32_t                 hoverSub   = -1;    // its sub index (paired with hoverComp)
     bool                    pickActive = false;
     uint64_t                rev        = 0;
 };

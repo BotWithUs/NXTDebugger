@@ -33,6 +33,22 @@ const char *SkillName(int typeId)
     return "?";
 }
 
+// KeyLine for an optional id field, rendering "(none)" for the -1 sentinel the
+// wire uses (followingIndex, spotAnimId).
+void KeyLineId(const char *label, int id)
+{
+    char buf[24];
+    if (id >= 0)
+    {
+        std::snprintf(buf, sizeof(buf), "%d", id);
+    }
+    else
+    {
+        std::snprintf(buf, sizeof(buf), "(none)");
+    }
+    theme::KeyLine(label, buf);
+}
+
 void DrawNotAttached()
 {
     if (!theme::BeginCard("ps.idle", "PLAYER", theme::kTextDim))
@@ -64,6 +80,8 @@ void DrawLocationCard(const nxt::ipc::LocalPlayer &self)
     std::snprintf(idx, sizeof(idx), "%d", self.serverIndex);
     theme::KeyLine("server index", idx);
     theme::KeyLine("moving", (self.flags & nxt::ipc::kFlagMoving) ? "yes" : "no");
+    theme::KeyLine("members", self.isMember ? "yes" : "no");
+    KeyLineId("following", self.followingIndex);
     theme::EndCard();
 }
 
@@ -118,6 +136,7 @@ void DrawCombatCard(const nxt::ipc::LocalPlayer &self)
     char stance[24];
     std::snprintf(stance, sizeof(stance), "%d", self.stanceId);
     theme::KeyLine("stance", stance);
+    KeyLineId("spot anim", self.spotAnimId);
     theme::EndCard();
 }
 
