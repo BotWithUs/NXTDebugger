@@ -3,7 +3,7 @@
 #include "app/App.h"
 #include "app/Theme.h"
 
-#include "game/Interfaces.h"   // WireCategory (NXTLibrary, cross-project include)
+#include "ipc/WireCategory.h"   // component category (published wire schema)
 
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -264,7 +264,7 @@ bool UpdateTracking(OverlayWindow &o, bool followForeground, int &outW, int &out
 
 void StyleForCategory(int32_t category, bool isHover, ImU32 &outCol, float &outThick)
 {
-    using nxt::game::interfaces::WireCategory;
+    using nxt::ipc::WireCategory;
     if (isHover)
     {
         outCol   = theme::kAccent;

@@ -8,7 +8,7 @@
 #include "wire/SnapshotReader.h"
 
 #include "ipc/SharedLayout.h"
-#include "game/Interfaces.h"
+#include "ipc/WireCategory.h"
 
 #include "imgui.h"
 
@@ -84,7 +84,7 @@ const char *IfaceName(app::App &a, int32_t id)
 
 const char *CategoryName(int32_t cat)
 {
-    using nxt::game::interfaces::WireCategory;
+    using nxt::ipc::WireCategory;
     switch (static_cast<WireCategory>(cat))
     {
     case WireCategory::Unknown:  return "Unknown";
@@ -731,7 +731,7 @@ bool NodeMatchesFilter(const Comp &c, const char *filter)
 
 void NodeSummary(const Comp &c, char *out, size_t cap)
 {
-    using nxt::game::interfaces::WireCategory;
+    using nxt::ipc::WireCategory;
     const auto cat = static_cast<WireCategory>(c.category);
     if (cat == WireCategory::Text && !c.text.empty())
     {
