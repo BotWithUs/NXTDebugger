@@ -64,7 +64,7 @@ void Subheading(const char *text);
 void KeyLine(const char *label, const char *value);
 
 // Hero number: big text + small label beneath. Width = autosize.
-// Use for top-of-panel statistics (tickId, npcCount, etc.).
+// Use for top-of-panel statistics (serverTick, npcCount, etc.).
 void HeroStat(const char *label, const char *value, ImU32 valueCol = kTextHi);
 
 // Progress strip: gradient fill `frac` of width, with optional right-aligned

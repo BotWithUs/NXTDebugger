@@ -98,10 +98,13 @@ void UpdateTickPulse(App &a)
     {
         return;
     }
-    if (snap->tickId != a.lastTickSeen)
+    // Pulse on publishSeq, not serverTick: this is a "the agent is alive and
+    // republishing" indicator, so the ~20ms field is the right input. A pulse
+    // driven off serverTick would sit dark for 600ms at a time and read as a hang.
+    if (snap->publishSeq != a.lastPublishSeqSeen)
     {
-        a.lastTickSeen = snap->tickId;
-        a.tickPulseT   = 1.0f;
+        a.lastPublishSeqSeen = snap->publishSeq;
+        a.tickPulseT         = 1.0f;
     }
 }
 

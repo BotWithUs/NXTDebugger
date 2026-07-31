@@ -64,8 +64,8 @@ struct App
     DWORD                 rpcConnectedPid = 0;
 
     // UI / animation state. Filled from the wire on Update(), read by panels.
-    uint64_t              lastTickSeen   = 0;
-    float                 tickPulseT     = 0.0f;   // 1.0 on tick advance, decays
+    uint64_t              lastPublishSeqSeen = 0;
+    float                 tickPulseT     = 0.0f;   // 1.0 on republish, decays
     float                 dotPhase       = 0.0f;   // 0..1 sec for status-dot pulse
     bool                  paused         = false;
     bool                  autoScrollLog  = true;

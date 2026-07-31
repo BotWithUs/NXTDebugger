@@ -51,12 +51,25 @@ void DrawHero(app::App &a, const nxt::ipc::Snapshot &snap)
     }
     const float fs = ImGui::GetFontSize();
 
+    // Three clocks, three stats. serverTick leads because it is the one a script
+    // author reasons in; publishSeq carries the pulse because it is the field that
+    // moves on every republish.
     char tickBuf[32];
-    std::snprintf(tickBuf, sizeof(tickBuf), "%llu",
-                  static_cast<unsigned long long>(snap.tickId));
+    std::snprintf(tickBuf, sizeof(tickBuf), "%d", snap.serverTick);
+    theme::HeroStat("serverTick", tickBuf, IM_COL32(0x66, 0xBB, 0x6A, 0xFF));
+
+    ImGui::SameLine(0, fs * 1.5f);
+    char cycleBuf[32];
+    std::snprintf(cycleBuf, sizeof(cycleBuf), "%d", snap.gameCycle);
+    theme::HeroStat("gameCycle", cycleBuf, theme::kAccent);
+
+    ImGui::SameLine(0, fs * 1.5f);
+    char seqBuf[32];
+    std::snprintf(seqBuf, sizeof(seqBuf), "%llu",
+                  static_cast<unsigned long long>(snap.publishSeq));
     const auto alpha = static_cast<uint8_t>(160.0f + 95.0f * a.tickPulseT);
-    ImU32 tickCol    = IM_COL32(0xFF, 0xAB, 0x47, alpha);
-    theme::HeroStat("tickId", tickBuf, tickCol);
+    ImU32 seqCol     = IM_COL32(0xFF, 0xAB, 0x47, alpha);
+    theme::HeroStat("publishSeq", seqBuf, seqCol);
 
     ImGui::SameLine(0, fs * 2.0f);
     ImGui::BeginGroup();

@@ -18,9 +18,19 @@ field names byte-for-byte); the debugger UI uses the names defined here.
 - **Session.** The RAII container around one open mapping. Owns the
   `HANDLE mapping`, the `void *view`, and the wide-string last-error
   buffer. Move-only; copying would double-close.
-- **Tick.** One advance of `Snapshot::tickId` — published by the producer's
-  `MainLogic` detour. The debugger's status dot pulses on the frame the
-  tick changes; panels recompute their state from the new front buffer.
+- **Tick** (server tick). One advance of `Snapshot::serverTick` — the server's
+  600ms game-logic step, and the clock script authors reason in. The Snapshot
+  panel leads with it and `kEventTick` fires once per advance.
+- **Game cycle.** One advance of `Snapshot::gameCycle` — the client's own ~20ms
+  main-loop counter, ~30 per server tick. This is the unit
+  `ProjectileEntry::startCycle`/`endCycle` are stamped in.
+- **Publish sequence.** One advance of `Snapshot::publishSeq` — the producer's
+  own republish counter, same ~20ms cadence as the game cycle but a different
+  number space (it starts at 1 when the agent attaches, so never compare the
+  two). The debugger's status dot pulses on it because it is the field that
+  moves on every republish; panels recompute from the new front buffer.
+  Through v17 this field was misnamed `tickId`, which is why anything that
+  paced off it ran ~30x fast.
 - **Snapshot.** The POD struct at `Local\nxt_snapshot_<pid>` + double-buffer
   offset. The debugger reads it lock-free via acquire-load on `frontIdx`.
 - **Event ring.** The SPMC ring inside the same mapping. The debugger keeps
