@@ -1,4 +1,4 @@
-# BotWithUs agent wire protocol — v18
+# BotWithUs agent wire protocol — v19
 
 How to read live RuneScape 3 state out of the BotWithUs agent, and how to drive
 it, from **any language**. This is the normative description of the bytes; the
@@ -25,7 +25,7 @@ every client logic step (~20ms) and costs a consumer nothing but a memory read.
 
 ## 1. Versioning
 
-`kProtocolVersion` is **18**.
+`kProtocolVersion` is **19**.
 
 - The version gates the **snapshot layout only**. Field offsets move between
   versions and there is **no forward compatibility**.
@@ -49,23 +49,23 @@ user as the client.
 Then validate, in this order:
 
 1. `magic` == `0x5354584E` (`'N','X','T','S'` LE). Wrong magic → not our region.
-2. `version` == `18`. Mismatch → refuse (see §1).
-3. `headerSize` == 64 and `snapshotSize` == 300168 as a sanity check.
+2. `version` == `19`. Mismatch → refuse (see §1).
+3. `headerSize` == 64 and `snapshotSize` == 365744 as a sanity check.
 
 ### 2.2 Region geometry
 
 | Constant | Value |
 |---|---|
 | `kMagic` | `0x5354584E` |
-| `kProtocolVersion` | 18 |
+| `kProtocolVersion` | 19 |
 | `sizeof(SharedHeader)` | 64 |
-| `sizeof(Snapshot)` | 300168 |
-| snapshot stride (padded to 64B) | 300224 |
+| `sizeof(Snapshot)` | 365744 |
+| snapshot stride (padded to 64B) | 365760 |
 | Snapshot[0] offset | 64 |
-| Snapshot[1] offset | 300288 |
-| Event ring offset | 600512 |
+| Snapshot[1] offset | 365824 |
+| Event ring offset | 731584 |
 | Event ring size (padded) | 131136 |
-| Total region size | 731648 |
+| Total region size | 862720 |
 
 Do not hardcode these blindly — the header carries `snapshotOff0`,
 `snapshotOff1`, `ringOff` and `ringSize` for exactly this reason. Prefer reading
@@ -76,10 +76,10 @@ them.
 | field | off | size | notes |
 |---|---|---|---|
 | `magic` | 0 | 4 | `'N','X','T','S'` |
-| `version` | 4 | 4 | == 18 |
+| `version` | 4 | 4 | == 19 |
 | `headerSize` | 8 | 4 | == 64 |
 | `layoutId` | 12 | 4 | reserved, 0 |
-| `snapshotSize` | 16 | 4 | == 300168 |
+| `snapshotSize` | 16 | 4 | == 365744 |
 | `snapshotOff0` | 20 | 4 | byte offset of buffer 0 |
 | `snapshotOff1` | 24 | 4 | byte offset of buffer 1 |
 | `ringOff` | 28 | 4 | byte offset of the event ring |
@@ -96,7 +96,7 @@ that reads the front buffer races with nothing.
 ```
 idx  = atomic_load_acquire(header.frontIdx)     // 0 or 1
 base = (idx == 0) ? header.snapshotOff0 : header.snapshotOff1
-copy 300168 bytes from mapping[base]            // then parse the copy
+copy 365744 bytes from mapping[base]            // then parse the copy
 ```
 
 Two rules that matter:
@@ -112,7 +112,7 @@ Two rules that matter:
 There is no reader registration and no backpressure — the producer never waits
 for you.
 
-### 2.5 `Snapshot` (300168 bytes)
+### 2.5 `Snapshot` (365744 bytes)
 
 | field | off | size | notes |
 |---|---|---|---|
@@ -140,10 +140,18 @@ for you.
 | `projectileCount` | 291968 | 4 | |
 | `projectiles` | 291972 | 8192 | `ProjectileEntry[256]`, stride 32 |
 | `gameCycle` | 300164 | 4 | **~20ms client cycle**, see §2.6 |
+| `dynRegion` | 300168 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
+| `dynChunkCount` | 300204 | 4 | |
+| `dynChunks` | 300208 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
 
 Every `*Count` is the live entry count; **entries past it are stale and must not
 be read**. Counts saturate at the array cap and the producer truncates silently,
 so a count equal to the cap may mean "there were more".
+
+`dynChunks` is the one array the producer does **not** clear when empty: in a
+static scene it publishes `dynChunkCount == 0` and leaves the 64 KB untouched
+rather than memsetting it every tick. Reading past the count there returns the
+previous instance's grid.
 
 ### 2.6 The three clocks — the easiest thing to get wrong
 
@@ -238,6 +246,76 @@ buffs/drains.
 `breakUntilMs == 0` means not on break. `sceneVersion` increments whenever the
 loaded region changes — use it to invalidate per-scene caches instead of diffing
 the whole `locations` array.
+
+### 2.10 `DynamicRegion` + `dynChunks` — instances (v19+)
+
+When the server builds an instance (player-owned house, Dungeoneering floor,
+most boss instances) it does not stream mapsquares from cache. It sends a chunk
+table, and the client stamps the scene out of 8x8-tile chunks **copied from
+static source regions**. This block publishes that table, so a consumer holding
+static map data can map an instance tile back to the tile it was copied from.
+
+`DynamicRegion` (36 bytes, at snapshot offset 300168):
+
+| field | off | size | notes |
+|---|---|---|---|
+| `isInstance` | 0 | 1 | **the authoritative flag** — branch on this |
+| `truncated` | 1 | 1 | grid exceeded the cap; `dynChunkCount` is 0 |
+| `sceneMode` | 4 | 4 | `3` static, `4..7` dynamic size classes; diagnostic only |
+| `originMapX` | 8 | 4 | min loaded **mapsquare** X — the grid index origin |
+| `originMapY` | 12 | 4 | |
+| `maxMapX` | 16 | 4 | inclusive max loaded mapsquare X |
+| `maxMapY` | 20 | 4 | |
+| `gridW` | 24 | 4 | descriptor width in **chunks**; 0 when static |
+| `gridH` | 28 | 4 | |
+| `requiredChunks` | 32 | 4 | `4 * gridW * gridH` — always written, so a truncation is diagnosable |
+
+**Units trap:** `originMap*` / `maxMap*` are mapsquares (64 tiles); `gridW` /
+`gridH` are chunks (8 tiles). Forgetting the `x8` yields a plausible-looking
+answer 8 tiles from correct.
+
+`dynChunks` is the grid flattened **plane-major**:
+
+```
+gx    = (tileX >> 3) - (originMapX << 3)
+gy    = (tileY >> 3) - (originMapY << 3)
+index = ((plane * gridW) + gx) * gridH + gy        // 0 <= index < dynChunkCount
+```
+
+Each entry is the game's own packed descriptor, copied verbatim:
+
+| bits | field |
+|---|---|
+| 24-25 | source plane |
+| 14-23 | source chunk X (10 bits) |
+| 3-13 | source chunk Y (11 bits) |
+| 1-2 | rotation, 0..3 |
+
+A **negative** entry means "no source chunk" — a hole in the instance. Source
+mapsquare is `srcChunk >> 3`; source tile origin is `srcChunk * 8`. Rotation maps
+a destination-local `(x, y)` inside the 8x8 chunk to source-local:
+
+| rot | source-local |
+|---|---|
+| 0 | `(x, y)` |
+| 1 | `(y, 7-x)` |
+| 2 | `(7-x, 7-y)` |
+| 3 | `(7-y, x)` |
+
+Scenery rotations compose the same way — `(locRot + chunkRot) & 3` — and any
+directional or wall collision bits must be rotated by the same amount. Copying
+raw flags without rotating them is the classic way to get instanced collision
+subtly wrong.
+
+Two things that will bite a naive consumer:
+
+- **`maxMapX/Y` do not bound the resolvable area.** The loaded window is often
+  larger than the descriptor grid (a 5x5 mapsquare window against a 32-chunk
+  grid is normal), so "inside the loaded window" does **not** imply "has a
+  source". Treat an out-of-grid index as a miss, not an error.
+- **Rotation has never been observed non-zero in the wild.** The semantics above
+  are read off the client's own transform, but a player-owned house is a flat
+  1:1 copy, so nothing has exercised rotation end-to-end yet.
 
 ---
 

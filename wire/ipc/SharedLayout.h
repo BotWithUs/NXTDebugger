@@ -22,6 +22,17 @@ namespace nxt::ipc {
 
 // Magic = 'N' 'X' 'T' 'S' little-endian. Consumers verify before binding.
 inline constexpr uint32_t kMagic           = 0x5354584Eu;
+// v19 appended the dynRegion + dynChunks[] tail block — the RS3 "dynamic
+// region" (instance) descriptor. When the server rebuilds a scene from a chunk
+// table (POH, Dungeoneering floor, most boss instances) the client stops
+// reading mapsquares from cache and instead stamps 8x8-tile chunks copied out
+// of static source regions, driven by a grid of packed 26-bit descriptors.
+// Publishing that grid lets a consumer map an instance tile back to the static
+// tile it was copied from, which is what a navigation layer baked against
+// static map data needs in order to path inside an instance at all. Appending
+// the block grows sizeof(Snapshot) from 300168 to 365744, so this is a hard
+// version bump.
+//
 // v18 made the snapshot's three time bases separately readable and honestly
 // named. The u64 at offset 0 was called tickId but is neither a tick nor the
 // client's cycle counter — it is this producer's own publish counter, +1 per
@@ -69,7 +80,7 @@ inline constexpr uint32_t kMagic           = 0x5354584Eu;
 // v13 dropped the per-interface ifaceVersions[] array. Interface state is now
 // read fresh on demand via the RPC handlers, so the consumer no longer caches
 // component results behind an invalidation token.
-inline constexpr uint32_t kProtocolVersion = 18;
+inline constexpr uint32_t kProtocolVersion = 19;
 
 // Caps mirror the game's own protocol caps:
 //   - NPCs: the client tracks at most 1024 loaded NPCs.
@@ -113,6 +124,17 @@ inline constexpr uint32_t kGroundItemCap = 1024;
 // entry. Overflow truncates silently — the producer stops appending once it
 // hits the cap.
 inline constexpr uint32_t kProjectileCap = 256;
+
+// Dynamic-region chunk-descriptor cap (v19+). Sized 4 planes x 64 x 64.
+//
+// The only size class measured live is scene mode 6, which is a 32x32 chunk
+// grid and needs 4*32*32 = 4096 entries. The headroom is deliberate: the grid
+// dimensions arrive on the wire as two raw u8s, modes 4/5/7 have never been
+// observed, and a grid that overflows this cap publishes ZERO chunks — so an
+// undersized cap does not degrade, it makes the whole block read as a static
+// scene. A silent no-op is the worst failure this feature can have, and 64 KB
+// per snapshot buffer is cheap insurance against shipping a v20 to fix it.
+inline constexpr uint32_t kDynChunkCap = 16384;
 
 // Bit flags shared between NpcEntry and PlayerEntry.
 inline constexpr uint8_t kFlagMoving = 1u << 0;
@@ -325,6 +347,47 @@ static_assert(offsetof(ProducerState, lastActionTimeMs) == 8);
 static_assert(offsetof(ProducerState, breakUntilMs)     == 16);
 static_assert(offsetof(ProducerState, sceneVersion)     == 24);
 
+// Scene-level scalars for the dynamic-region (instance) block (v19+).
+//
+// UNITS TRAP: originMapX/Y and maxMapX/Y are MAPSQUARE indices (64 tiles each);
+// gridW/gridH are CHUNK counts (8 tiles each). The x8 conversion between them
+// is the consumer's, and it is the easiest thing on this block to get wrong —
+// forgetting it yields a plausible-looking answer 8 tiles from correct.
+//
+// isInstance is the authoritative flag: it mirrors the producer finding a live
+// chunk-descriptor table for the loaded scene, which is the same condition the
+// client itself branches on. sceneMode is the raw engine value and is carried
+// for diagnostics only (it is also the only way anyone will ever measure the
+// unobserved size classes) — branch on isInstance, not on sceneMode.
+struct DynamicRegion {
+    uint8_t isInstance;      // 0  1 when the scene is a dynamic region
+    uint8_t truncated;       // 1  1 when the grid exceeded kDynChunkCap
+    uint8_t _pad0[2];        // 2
+    int32_t sceneMode;       // 4  3 = static, 4..7 = dynamic size classes
+    int32_t originMapX;      // 8  min loaded mapsquare X (grid index origin)
+    int32_t originMapY;      // 12
+    int32_t maxMapX;         // 16 inclusive max loaded mapsquare X
+    int32_t maxMapY;         // 20
+    int32_t gridW;           // 24 descriptor width in chunks; 0 when static
+    int32_t gridH;           // 28 descriptor height in chunks
+    // 4 * gridW * gridH — the entry count the grid actually needed. Always
+    // written, including when it exceeds the cap, so a truncation is
+    // diagnosable ("40x40 grid, cap 64x64") instead of merely flagged.
+    int32_t requiredChunks;  // 32
+};
+static_assert(sizeof(DynamicRegion)  == 36);
+static_assert(alignof(DynamicRegion) == 4);
+static_assert(offsetof(DynamicRegion, isInstance)     == 0);
+static_assert(offsetof(DynamicRegion, truncated)      == 1);
+static_assert(offsetof(DynamicRegion, sceneMode)      == 4);
+static_assert(offsetof(DynamicRegion, originMapX)     == 8);
+static_assert(offsetof(DynamicRegion, originMapY)     == 12);
+static_assert(offsetof(DynamicRegion, maxMapX)        == 16);
+static_assert(offsetof(DynamicRegion, maxMapY)        == 20);
+static_assert(offsetof(DynamicRegion, gridW)          == 24);
+static_assert(offsetof(DynamicRegion, gridH)          == 28);
+static_assert(offsetof(DynamicRegion, requiredChunks) == 32);
+
 // Per-tick snapshot. The producer writes the back buffer once per client
 // logic step, then publishes by flipping SharedHeader::frontIdx. Readers in any process
 // load frontIdx with acquire and read buffers[frontIdx]; the writer never
@@ -423,6 +486,45 @@ struct Snapshot {
     // shares the cadence but not the number space. Doubles as the tail pad that
     // keeps sizeof(Snapshot) 8-aligned, so v18 costs zero bytes over v17.
     int32_t         gameCycle;
+
+    // Dynamic-region (instance) block (v19+). See the DynamicRegion comment
+    // above for what the scalars mean and for the mapsquare-vs-chunk units trap.
+    //
+    // dynChunks is the instance's chunk-descriptor grid, flattened PLANE-MAJOR:
+    //
+    //     index = ((plane * gridW) + gx) * gridH + gy
+    //     gx    = (tileX >> 3) - (originMapX << 3)
+    //     gy    = (tileY >> 3) - (originMapY << 3)
+    //
+    // Each entry is the game's own packed 26-bit descriptor, copied verbatim
+    // rather than decoded — it is half the bytes for identical information, and
+    // the producer fill becomes a straight copy:
+    //
+    //     negative (-1)  no source chunk (a hole in the instance)
+    //     bits 24-25     source plane
+    //     bits 14-23     source chunk X (10 bits)
+    //     bits  3-13     source chunk Y (11 bits)
+    //     bits  1-2      rotation, 0..3
+    //
+    // Source mapsquare is srcChunk >> 3; source tile origin is srcChunk * 8.
+    // Rotation maps a dest-local (x, y) inside the 8x8 chunk to source-local:
+    // r0 (x,y), r1 (y,7-x), r2 (7-x,7-y), r3 (7-y,x). Loc rotations compose as
+    // (locRot + chunkRot) & 3, and directional/wall collision bits must be
+    // rotated by the same amount.
+    //
+    // TWO CONTRACT POINTS CONSUMERS DEPEND ON:
+    //  1. In a static scene the producer publishes dynChunkCount == 0 and
+    //     leaves these bytes STALE — it deliberately does not memset 64 KB per
+    //     tick for nothing. Never read past dynChunkCount.
+    //  2. When truncated is set, dynChunkCount is 0 but gridW/gridH stay
+    //     populated, so a consumer can report the size it would have needed.
+    //
+    // The preceding gameCycle lands the running offset at 0 mod 8, and
+    // DynamicRegion(36) + dynChunkCount(4) + kDynChunkCap*4 keeps it there, so
+    // sizeof(Snapshot) stays exact with no trailing pad.
+    DynamicRegion   dynRegion;
+    uint32_t        dynChunkCount;
+    uint32_t        dynChunks[kDynChunkCap];
 };
 
 static_assert(offsetof(Snapshot, publishSeq)     == 0,                                         "publishSeq offset");
@@ -524,7 +626,46 @@ static_assert(offsetof(Snapshot, gameCycle)
                                                       + sizeof(GroundItemEntry) * kGroundItemCap
                                                       + sizeof(ProjectileEntry) * kProjectileCap,
                                                                                                 "gameCycle offset");
-static_assert(sizeof(Snapshot) == 64 + sizeof(LocalPlayer)
+static_assert(offsetof(Snapshot, dynRegion)
+                                                 == 64 + sizeof(LocalPlayer)
+                                                      + sizeof(NpcEntry)        * kNpcCap
+                                                      + sizeof(PlayerEntry)     * kPlayerCap
+                                                      + sizeof(LocationEntry)   * kLocationCap
+                                                      + sizeof(InventoryHeader) * kInventoryCap
+                                                      + sizeof(InventoryItem)   * kInventoryItemCap
+                                                      + sizeof(ProducerState)
+                                                      + sizeof(int32_t)         * kOpenIfaceCap
+                                                      + sizeof(GroundItemEntry) * kGroundItemCap
+                                                      + sizeof(ProjectileEntry) * kProjectileCap,
+                                                                                                "dynRegion offset");
+static_assert(offsetof(Snapshot, dynChunkCount)
+                                                 == 64 + sizeof(DynamicRegion)
+                                                      + sizeof(LocalPlayer)
+                                                      + sizeof(NpcEntry)        * kNpcCap
+                                                      + sizeof(PlayerEntry)     * kPlayerCap
+                                                      + sizeof(LocationEntry)   * kLocationCap
+                                                      + sizeof(InventoryHeader) * kInventoryCap
+                                                      + sizeof(InventoryItem)   * kInventoryItemCap
+                                                      + sizeof(ProducerState)
+                                                      + sizeof(int32_t)         * kOpenIfaceCap
+                                                      + sizeof(GroundItemEntry) * kGroundItemCap
+                                                      + sizeof(ProjectileEntry) * kProjectileCap,
+                                                                                                "dynChunkCount offset");
+static_assert(offsetof(Snapshot, dynChunks)
+                                                 == 68 + sizeof(DynamicRegion)
+                                                      + sizeof(LocalPlayer)
+                                                      + sizeof(NpcEntry)        * kNpcCap
+                                                      + sizeof(PlayerEntry)     * kPlayerCap
+                                                      + sizeof(LocationEntry)   * kLocationCap
+                                                      + sizeof(InventoryHeader) * kInventoryCap
+                                                      + sizeof(InventoryItem)   * kInventoryItemCap
+                                                      + sizeof(ProducerState)
+                                                      + sizeof(int32_t)         * kOpenIfaceCap
+                                                      + sizeof(GroundItemEntry) * kGroundItemCap
+                                                      + sizeof(ProjectileEntry) * kProjectileCap,
+                                                                                                "dynChunks offset");
+static_assert(sizeof(Snapshot) == 68 + sizeof(DynamicRegion)
+                                + sizeof(LocalPlayer)
                                 + sizeof(NpcEntry)        * kNpcCap
                                 + sizeof(PlayerEntry)     * kPlayerCap
                                 + sizeof(LocationEntry)   * kLocationCap
@@ -533,8 +674,20 @@ static_assert(sizeof(Snapshot) == 64 + sizeof(LocalPlayer)
                                 + sizeof(ProducerState)
                                 + sizeof(int32_t)         * kOpenIfaceCap
                                 + sizeof(GroundItemEntry) * kGroundItemCap
-                                + sizeof(ProjectileEntry) * kProjectileCap,
+                                + sizeof(ProjectileEntry) * kProjectileCap
+                                + sizeof(uint32_t)        * kDynChunkCap,
               "Snapshot has unexpected trailing padding");
+
+// Absolute pins on the v19 tail. Every other assert above is expressed
+// relatively, which means two simultaneous cap edits could cancel out and still
+// pass the whole chain. These two cannot — update them deliberately, never
+// mechanically, and only when the wire genuinely moved.
+static_assert(offsetof(Snapshot, dynRegion) == 300168, "v19 dynRegion offset drifted");
+// Literal, deliberately NOT written as `300208 + sizeof(uint32_t) * kDynChunkCap`
+// — that form is parameterised on the cap and would keep passing through a cap
+// change, which is exactly the drift this assert exists to catch.
+static_assert(sizeof(Snapshot) == 365744, "v19 Snapshot size drifted");
+static_assert(sizeof(Snapshot) % 8 == 0, "Snapshot must stay 8-aligned end-to-end");
 
 // Header sits at offset 0. 64-byte aligned so it sits on a single cache line.
 // Field order is chosen so all natural alignments are satisfied without any
