@@ -374,9 +374,9 @@ replaying a full ring of stale events.
 | 40 | action executed | `ActionExecutedBody` |
 | 50 | break started | `BreakStartedBody` |
 | 51 | break ended | *(none)* |
-| 60 | walk arrived | `WalkBody` |
-| 61 | walk cancelled | `WalkBody` |
-| 62 | walk failed | `WalkBody` |
+| 60 | walk arrived | `WalkBody` — *permanently reserved, never emitted* |
+| 61 | walk cancelled | `WalkBody` — *permanently reserved, never emitted* |
+| 62 | walk failed | `WalkBody` — *permanently reserved, never emitted* |
 | 70 | hitmark | `HitmarkBody` |
 | 71 | headbar | `HeadbarBody` |
 | 72 | spot anim | `SpotAnimBody` |
@@ -384,6 +384,10 @@ replaying a full ring of stale events.
 
 Types 10 and 12 share a body shape; **switch on the discriminator** to know
 whether `varpId` is a varp or a varc id.
+
+Types 60–62 are allocated but the agent never writes one — there is no
+agent-side walker (§4.4). Their numbers stay reserved so they are never reused
+for a different event; decode them if you already do, but do not wait on them.
 
 ### 3.4 Body layouts
 
@@ -466,7 +470,6 @@ right way to target a specific agent build rather than hardcoding this list.
 | Broker | `_debug.subscribe`, `_debug.unsubscribe`, `_debug.publish` |
 | Clocks / state | `get_game_cycle`, `get_login_state` |
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
-| Movement | `walk_to`, `walk_world_path`, `walk_cancel`, `walk_status`, `is_reachable`, `find_path`, `find_world_path`, `region_cache_info`, `region_cache_clear` |
 | Session | `set_world`, `change_login_state`, `login_to_lobby`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
 | Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path` |
@@ -474,10 +477,20 @@ right way to target a specific agent build rather than hardcoding this list.
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | World map | `query_world_map_elements` |
 
-Two gaps worth knowing before you design around them:
+Three gaps worth knowing before you design around them:
 
 - **There is no `get_varbit`.** Varbits decode consumer-side from a backing varp
   plus the varbit definition's bit range, or arrive via event type 11.
+- **There is no agent-side pathfinder**, and no Movement group. Nine walker
+  placeholders (`walk_to`, `walk_world_path`, `walk_cancel`, `walk_status`,
+  `is_reachable`, `find_path`, `find_world_path`, `region_cache_info`,
+  `region_cache_clear`) were **removed** on 2026-08-09; they had always been
+  inert sentinels that never moved a character. Calling one now returns
+  `{id, error: "method not found: <name>"}`. Movement planning belongs to the
+  consumer: the sanctioned path is `worldwalker.dll`, whose flat C ABI is
+  FFI-shaped for any language, driving the agent through `queue_action` WALK
+  (action id 23) clicks. Event types 60/61/62 stay allocated as permanently
+  reserved and are never emitted.
 - `set_world` and `change_login_state` are currently stubs.
 
 ### 4.5 Broker topics

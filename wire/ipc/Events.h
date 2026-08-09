@@ -53,7 +53,12 @@ enum EventType : uint32_t {
     kEventBreakStarted       = 50,
     kEventBreakEnded         = 51,
 
-    // Walk / pathfinding
+    // Walk / pathfinding — PERMANENTLY RESERVED. The agent has never emitted
+    // these and never will: the producer-side walker RPCs were retired
+    // 2026-08-09 and pathfinding lives in worldwalker.dll on the consumer
+    // side, which publishes the equivalent signals into its own host-local
+    // event stream. Consumers still decode 60/61/62, so the numbers stay
+    // allocated and must never be reused for a different event.
     kEventWalkArrived        = 60,
     kEventWalkCancelled      = 61,
     kEventWalkFailed         = 62,
@@ -133,8 +138,8 @@ static_assert(sizeof(ActionExecutedBody) <= kEventBodyMax);
 // shape is shared across walk_arrived / walk_cancelled / walk_failed (the
 // EventSlot::type discriminator carries the outcome). Java's WalkArrivedEvent
 // et al. only model {targetX, targetY}; we don't carry plane/reason because
-// no consumer reads them and the Walk producer (which doesn't exist yet) will
-// know its own target plane out of band.
+// no consumer reads them. Kept alongside the reserved 60/61/62 discriminators
+// so the ring's body shape stays documented — the agent never writes one.
 struct WalkBody {
     int32_t targetX;
     int32_t targetY;
