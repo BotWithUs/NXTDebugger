@@ -260,15 +260,29 @@ static map data can map an instance tile back to the tile it was copied from.
 | field | off | size | notes |
 |---|---|---|---|
 | `isInstance` | 0 | 1 | **the authoritative flag** — branch on this |
-| `truncated` | 1 | 1 | grid exceeded the cap; `dynChunkCount` is 0 |
-| `sceneMode` | 4 | 4 | `3` static, `4..7` dynamic size classes; diagnostic only |
-| `originMapX` | 8 | 4 | min loaded **mapsquare** X — the grid index origin |
-| `originMapY` | 12 | 4 | |
-| `maxMapX` | 16 | 4 | inclusive max loaded mapsquare X |
-| `maxMapY` | 20 | 4 | |
+| `truncated` | 1 | 1 | grid unusable, `dynChunkCount` is 0 — two causes, see below |
+| `sceneMode` | 4 | 4 | `3` static, `4..7` dynamic size classes, **`-1` no scene**; diagnostic only |
+| `originMapX` | 8 | 4 | min loaded **mapsquare** X — the grid index origin; `-1` if no scene |
+| `originMapY` | 12 | 4 | `-1` if no scene |
+| `maxMapX` | 16 | 4 | inclusive max loaded mapsquare X; `-1` if no scene |
+| `maxMapY` | 20 | 4 | `-1` if no scene |
 | `gridW` | 24 | 4 | descriptor width in **chunks**; 0 when static |
 | `gridH` | 28 | 4 | |
-| `requiredChunks` | 32 | 4 | `4 * gridW * gridH` — always written, so a truncation is diagnosable |
+| `requiredChunks` | 32 | 4 | `4 * gridW * gridH` — populated even past the cap, so an overflow is diagnosable; 0 when no grid was read |
+
+**`-1` = no scene resolved.** Whenever no scene world resolves — before a world
+is loaded, for instance — all five of `sceneMode` / `originMapX` / `originMapY` /
+`maxMapX` / `maxMapY` publish `-1`.
+Distinct from a real static scene, which carries `sceneMode == 3` and real
+mapsquare indices. `isInstance` and `truncated` are both 0 either way, so this
+only bites code that reads the scalars directly — `originMapX << 3` on `-1`
+yields `-8`, not a miss.
+
+**`truncated` has two causes**, and `dynChunkCount` is 0 for both (a partially
+filled plane-major array cannot be indexed safely). The dimensions separate them:
+cap overflow leaves `gridW`/`gridH`/`requiredChunks` **populated**; a descriptor
+that did not read back as a grid at all leaves all three **0**. Code that assumes
+the first case reports a meaningless `0x0`.
 
 **Units trap:** `originMap*` / `maxMap*` are mapsquares (64 tiles); `gridW` /
 `gridH` are chunks (8 tiles). Forgetting the `x8` yields a plausible-looking
@@ -277,10 +291,29 @@ answer 8 tiles from correct.
 `dynChunks` is the grid flattened **plane-major**:
 
 ```
-gx    = (tileX >> 3) - (originMapX << 3)
-gy    = (tileY >> 3) - (originMapY << 3)
-index = ((plane * gridW) + gx) * gridH + gy        // 0 <= index < dynChunkCount
+gx = (tileX >> 3) - (originMapX << 3)
+gy = (tileY >> 3) - (originMapY << 3)
+
+// Range-check BEFORE flattening. Not optional — see below.
+// Always exactly 4 planes (0..3) — the formula assumes it, and it is why
+// requiredChunks is 4 * gridW * gridH.
+if (plane < 0 || plane >= 4 || gx < 0 || gx >= gridW || gy < 0 || gy >= gridH)
+    -> no source chunk
+
+index = ((plane * gridW) + gx) * gridH + gy
+
+// Second guard: the count, not the cap.
+if (index < 0 || index >= dynChunkCount)
+    -> no source chunk
 ```
+
+**The range check is load-bearing; bounds-checking `index` alone is not enough.**
+Out-of-grid tiles are routine (see the `maxMapX/Y` note below), and an unchecked
+`(gx, gy)` does not overflow the index — it **aliases onto a live cell belonging
+to another location**. On a 32x32 grid (`dynChunkCount == 4096`), `gx=0, gy=32`
+gives `index = 32`, which is cell `(1, 0)`; `gx=-1, gy=32` gives `index = 0`, the
+origin cell. Both pass `0 <= index < dynChunkCount` and resolve to an unrelated
+source chunk — a confident wrong answer instead of a miss.
 
 Each entry is the game's own packed descriptor, copied verbatim:
 
@@ -291,9 +324,15 @@ Each entry is the game's own packed descriptor, copied verbatim:
 | 3-13 | source chunk Y (11 bits) |
 | 1-2 | rotation, 0..3 |
 
-A **negative** entry means "no source chunk" — a hole in the instance. Source
-mapsquare is `srcChunk >> 3`; source tile origin is `srcChunk * 8`. Rotation maps
-a destination-local `(x, y)` inside the 8x8 chunk to source-local:
+A **negative** entry means "no source chunk" — a **hole** in the instance. A hole
+reads as fully blocked: genuinely solid, not merely unknown, so collision code
+treats those tiles as impassable rather than as data to fill in from the static
+map.
+
+Call the extracted 10- and 11-bit values `srcChunkX` / `srcChunkY`. Both convert
+**per axis**: source mapsquare is `srcChunkX >> 3` / `srcChunkY >> 3`, source tile
+origin is `srcChunkX * 8` / `srcChunkY * 8`. Rotation maps a destination-local
+`(x, y)` inside the 8x8 chunk to source-local:
 
 | rot | source-local |
 |---|---|
