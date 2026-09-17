@@ -531,6 +531,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
+| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component` |
 
 Four gaps worth knowing before you design around them:
 
@@ -562,6 +563,150 @@ Four gaps worth knowing before you design around them:
   capped at 256 rows. Graphics playing *on* an NPC or player are not in that
   list — read those from `spotAnimId` on the snapshot's entity rows, or from
   event type 72 (§2.8).
+
+#### Debug drawing
+
+The agent retains a set of draw commands and renders them over the client. The
+store is **not** in shared memory and nothing about it moves `kProtocolVersion`
+— it is entirely additive over this pipe.
+
+Three properties shape the API, and a consumer that assumes otherwise will get
+surprises:
+
+- **Commands are keyed, not handled.** Every command carries a caller-chosen
+  string key of 1–47 bytes, and setting the same key again replaces rather than
+  appends. There is no handle to leak and nothing to free; redrawing
+  `"target-box"` every tick is idempotent — including at slot capacity, where
+  replacing a `text` or `poly` key reuses the slot it already holds rather than
+  competing for a free one.
+- **Keys are scoped to the connection.** Two clients may both use
+  `"target-box"` without colliding, `debug_draw_clear` only ever removes your
+  own, and **when a connection closes the agent drops everything that
+  connection drew.** A client that dies mid-script leaves nothing on screen.
+- **TTL is mandatory.** Omitting `ttl_ms` gives you 3000 ms. `ttl_ms: 0` means
+  "until replaced, cleared, or my connection closes" — it is not a way to draw
+  something permanent from outside a live session.
+
+| Method | Params | Returns |
+|---|---|---|
+| `debug_draw_set` | `{key, kind, space?, …geometry…, color?, thickness?, filled?, closed?, z?, ttl_ms?, text?}` | `{key}` |
+| `debug_draw_set_batch` | `{items: [ …as above… ]}`, at most 256 | `{count, dropped, error}` |
+| `debug_draw_clear` | `{key}` and/or `{keys: […]}` | `{removed}` |
+| `debug_draw_clear_all` | `{scope: "mine" \| "all"}`, default `"mine"` | `{removed, scope}` |
+| `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
+| `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
+| `debug_draw_stats` | — | see below |
+| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all}` |
+| `highlight_component` | `{iface, comp, color?, thickness?, filled?, ttl_ms?, key?}` | `{key}` |
+
+`kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
+the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
+and `ellipse` take `x, y, w, h` (one command with a `filled` flag, not two
+commands); `text` takes `x, y` and a UTF-8 `text`; `poly` takes a flat
+`points: [x, y, x, y, …]` of 2–32 pairs; `component` takes `iface, comp` and no
+geometry at all.
+
+`highlight_component` generates a key when you omit one, formatted
+**`comp:<iface>:<comp>`** — for example `comp:1473:5`. That format is part of
+the contract: without it a caller who omitted `key` has no way to name the
+highlight again in order to clear it. The reply always echoes the key actually
+used, so reading it back is the reliable route.
+
+That last one is the point of the semantic kinds. **A component's on-screen
+rect is recomputed by the client on every layout pass**, so a highlight that
+stored a rectangle would drift the moment the UI relaid out, the window
+resized, or a scrollpane moved. The agent stores the `(iface, comp)` pair and
+re-resolves the rect on the game thread once per tick. `debug_draw_list`
+reports the last resolved rect as `rect` alongside a `resolved` flag; a
+renderer skips an unresolved command rather than drawing a stale one.
+
+**`space` is on the wire from the start and `"world"` is not implemented yet.**
+It is accepted, validated, and rejected with
+`world space requires projection - not yet implemented`, so the shape of this
+API will not change under you when projection lands. `"screen"` (client-area
+pixels, origin top-left) is the default and the only value that works today.
+**Coordinates are integers everywhere** — this wire has no float field and the
+producer's writer has no float32 encoder, both deliberately. World coordinates,
+when they arrive, will be fixed-point (`tile * 256 + subtile`), not floats.
+
+Colours are `0xAARRGGBB` packed into an unsigned integer.
+
+**Two coordinate spaces meet here, and only one of them is pixels.** Screen-space
+draw commands are in the render surface's own pixels. A **component rect is
+not** — the client lays its interfaces out in a smaller logical space and scales
+that to fill the viewport, so the agent scales a resolved component rect by
+`surface / layout` before drawing it. Measured on a 4K display at 225% scaling:
+the ratio is identical in x and y at every window size and settles at the display
+scale once the window is large enough to stop the layout clamping at its
+~1024x600 floor. Consumers never see this — `debug_draw_list` reports the rect in
+layout units, exactly as `get_component` does — but anyone comparing a reported
+rect against a screenshot needs to know the factor exists.
+
+**`debug_draw_probe_pixels` is a verification surface, not a drawing one.** It
+reads back what is actually on screen inside the overlay's target client rect and
+counts pixels matching `color`, so a test can assert that pixels *reached the
+screen* rather than that a counter moved. `source: 1` samples the overlay's own
+surface instead, which splits "did it draw" from "did it reach the screen" — the
+two halves have genuinely different causes, and separating them is what located
+both renderer bugs found during phase 1. Coordinates are client-space, so a
+mismatch also catches the overlay being aligned to the wrong window.
+
+Every cap a call can hit is a hard error rather than a silent truncation, but
+**how you are told depends on which call you made, and only some of them touch
+the counter**:
+
+- `debug_draw_set` and `highlight_component` answer `{id, error}`. Exceeding the
+  512 retained commands, the 64 text slots or the 64 polyline slots also
+  increments `debug_draw_stats.dropped`. A **key longer than 47 bytes**, an
+  out-of-range coordinate and a malformed command are rejected before the store
+  is touched at all, so they error **without** incrementing `dropped` — do not
+  use that counter to detect them.
+- `debug_draw_set_batch` does **not** fail. It answers a normal `{id, result}`
+  with `{count, dropped, error}`: the number applied, the number refused, and
+  the **first** error string only (`nil` when none). A batch that is entirely
+  refused still looks like a successful call at the envelope level, so a client
+  that checks only for `{id, error}` will read a 256-item batch that drew
+  nothing as a success. Check `dropped`.
+
+Coordinates must be within ±1048576 and rect/ellipse extents at most 16384;
+`thickness` is 1–64 and defaults to 1; `w` and `h` must both be > 0. The
+coordinate limit is why a caller must not feed a projected point through
+blindly — a point behind the camera projects to `INT32_MIN`, which is rejected
+rather than clamped, so you learn the point is not on screen instead of getting
+a line to nowhere.
+
+One cap is **not** an error, because it is not reachable from a single call:
+`kMaxResolveTargets` (64) bounds how many component highlights the agent
+re-resolves per tick. Past it, the surplus is resolved on a following tick —
+collection rotates, so nothing is starved — and `debug_draw_stats.resolve_overflow`
+counts the ticks on which that happened. A non-zero value means some highlight
+geometry is lagging the game by a tick or more.
+`debug_draw_list` is **paged** — `limit` defaults to and is capped at 128 rows,
+which is what keeps the one response on this wire that could otherwise approach
+the 4 MiB frame limit from doing so. Use `offset` with the returned `total` to
+walk the rest.
+
+`debug_draw_stats` is deliberately over-instrumented, because the failure mode
+this feature has to avoid is an overlay that has silently died while looking
+perfectly healthy. Alongside `count`, `capacity`, the slot gauges, `dropped`,
+`resolve_failures`, `resolve_overflow` and `version`, it reports `backend`
+(which renderer is actually live), `backend_ready`, `frames`,
+`backend_presents`, `frames_undelivered`, `skipped_frames`, `last_present_us`,
+`present_failures`, `last_present_error` and `surface: [w, h]`.
+
+The three fields worth asserting on are **`present_failures`** (uploads that
+failed — the health check, and falsifiable: break the present and it climbs),
+**`has_presented`** (the renderer has drawn at least one frame), and
+**`resolver_live`** (the game thread has returned resolved geometry at least
+once — the positive trace that the per-tick refresh is running, since an
+unresolved rect is also what you would see if it never ran at all).
+
+**Do not build a check on `frames == backend_presents`.** They answer different
+questions: `frames` counts what the pump handed to the renderer, and
+`backend_presents` counts uploads that actually reached the screen. A frame
+whose dirty region is empty is processed without uploading anything, so they
+differ in normal operation. `frames_undelivered` is their difference, reported
+as a diagnostic rather than a verdict.
 
 ### 4.5 Broker topics
 
