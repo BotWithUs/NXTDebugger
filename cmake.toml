@@ -73,6 +73,48 @@ else()
     message(STATUS "NXTDebugger: no producer checkout beside us — using wire/ as-is")
 endif()
 
+# PROTOCOL.md drift check.
+#
+# The hash check above cannot cover wire/PROTOCOL.md: it has no producer-side
+# original to diff against — it is the normative prose description, maintained
+# here. So the check above stayed green while the document drifted, twice, which
+# is worse than having no check, because green reads as "verified".
+#
+# check_protocol_doc.ps1 closes the names half: event discriminators, event body
+# structs and the RPC method catalog, compared in both directions. It needs no
+# producer checkout for the event halves (both sides are in wire/) and skips the
+# method half when none is present, exactly as the hash check does.
+#
+# The offsets half is the compiler's: src/wire/ProtocolDocPins.h pins every
+# absolute figure the document prints to a real offsetof.
+#
+# Found by absolute path as well as on PATH: this is a Windows-only target, so
+# powershell.exe is always present, and a stripped PATH must not be allowed to
+# turn the gate below into a no-op. Not finding it is therefore fatal rather
+# than a warning — an unrun check that prints a warning nobody reads is the
+# failure mode this whole block exists to remove.
+find_program(NXTDBG_POWERSHELL
+    NAMES pwsh powershell
+    HINTS "$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0")
+if(NOT NXTDBG_POWERSHELL)
+    message(FATAL_ERROR
+        "No PowerShell found, so wire/PROTOCOL.md cannot be checked against the "
+        "wire surface. Put powershell.exe or pwsh on PATH, or pass "
+        "-DNXTDBG_POWERSHELL=<path>.")
+endif()
+
+execute_process(
+    COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_protocol_doc.ps1
+    RESULT_VARIABLE _doc_result
+    OUTPUT_VARIABLE _doc_output
+    ERROR_VARIABLE  _doc_output)
+if(NOT _doc_result EQUAL 0)
+    message(FATAL_ERROR
+        "wire/PROTOCOL.md has drifted from the wire surface:\\n${_doc_output}")
+endif()
+message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
+
 # FreeType: build the standalone static library — no zlib / png / harfbuzz /
 # brotli / bzip2 transitive deps. We only need it as ImGui's font rasterizer.
 # Cache vars must be set BEFORE the fetch-content add_subdirectory so they
