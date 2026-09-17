@@ -9,3 +9,5 @@ _cmkr_*/
 out/
 .cache/
 *.log
+build*/
+.claude/
