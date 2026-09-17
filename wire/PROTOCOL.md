@@ -576,7 +576,9 @@ surprises:
 - **Commands are keyed, not handled.** Every command carries a caller-chosen
   string key of 1–47 bytes, and setting the same key again replaces rather than
   appends. There is no handle to leak and nothing to free; redrawing
-  `"target-box"` every tick is idempotent.
+  `"target-box"` every tick is idempotent — including at slot capacity, where
+  replacing a `text` or `poly` key reuses the slot it already holds rather than
+  competing for a free one.
 - **Keys are scoped to the connection.** Two clients may both use
   `"target-box"` without colliding, `debug_draw_clear` only ever removes your
   own, and **when a connection closes the agent drops everything that
@@ -595,7 +597,7 @@ surprises:
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
 | `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all}` |
-| `highlight_component` | `{iface, comp, color?, thickness?, ttl_ms?, key?}` | `{key}` |
+| `highlight_component` | `{iface, comp, color?, thickness?, filled?, ttl_ms?, key?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
 the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
@@ -603,6 +605,12 @@ and `ellipse` take `x, y, w, h` (one command with a `filled` flag, not two
 commands); `text` takes `x, y` and a UTF-8 `text`; `poly` takes a flat
 `points: [x, y, x, y, …]` of 2–32 pairs; `component` takes `iface, comp` and no
 geometry at all.
+
+`highlight_component` generates a key when you omit one, formatted
+**`comp:<iface>:<comp>`** — for example `comp:1473:5`. That format is part of
+the contract: without it a caller who omitted `key` has no way to name the
+highlight again in order to clear it. The reply always echoes the key actually
+used, so reading it back is the reliable route.
 
 That last one is the point of the semantic kinds. **A component's on-screen
 rect is recomputed by the client on every layout pass**, so a highlight that
@@ -643,9 +651,36 @@ two halves have genuinely different causes, and separating them is what located
 both renderer bugs found during phase 1. Coordinates are client-space, so a
 mismatch also catches the overlay being aligned to the wrong window.
 
-Every cap is a hard error rather than a silent truncation: exceeding the 512
-retained commands, the 64 text slots, the 64 polyline slots, or the 47-byte key
-gives you `{id, error}` and a counter in `debug_draw_stats.dropped`.
+Every cap a call can hit is a hard error rather than a silent truncation, but
+**how you are told depends on which call you made, and only some of them touch
+the counter**:
+
+- `debug_draw_set` and `highlight_component` answer `{id, error}`. Exceeding the
+  512 retained commands, the 64 text slots or the 64 polyline slots also
+  increments `debug_draw_stats.dropped`. A **key longer than 47 bytes**, an
+  out-of-range coordinate and a malformed command are rejected before the store
+  is touched at all, so they error **without** incrementing `dropped` — do not
+  use that counter to detect them.
+- `debug_draw_set_batch` does **not** fail. It answers a normal `{id, result}`
+  with `{count, dropped, error}`: the number applied, the number refused, and
+  the **first** error string only (`nil` when none). A batch that is entirely
+  refused still looks like a successful call at the envelope level, so a client
+  that checks only for `{id, error}` will read a 256-item batch that drew
+  nothing as a success. Check `dropped`.
+
+Coordinates must be within ±1048576 and rect/ellipse extents at most 16384;
+`thickness` is 1–64 and defaults to 1; `w` and `h` must both be > 0. The
+coordinate limit is why a caller must not feed a projected point through
+blindly — a point behind the camera projects to `INT32_MIN`, which is rejected
+rather than clamped, so you learn the point is not on screen instead of getting
+a line to nowhere.
+
+One cap is **not** an error, because it is not reachable from a single call:
+`kMaxResolveTargets` (64) bounds how many component highlights the agent
+re-resolves per tick. Past it, the surplus is resolved on a following tick —
+collection rotates, so nothing is starved — and `debug_draw_stats.resolve_overflow`
+counts the ticks on which that happened. A non-zero value means some highlight
+geometry is lagging the game by a tick or more.
 `debug_draw_list` is **paged** — `limit` defaults to and is capped at 128 rows,
 which is what keeps the one response on this wire that could otherwise approach
 the 4 MiB frame limit from doing so. Use `offset` with the returned `total` to
@@ -654,15 +689,24 @@ walk the rest.
 `debug_draw_stats` is deliberately over-instrumented, because the failure mode
 this feature has to avoid is an overlay that has silently died while looking
 perfectly healthy. Alongside `count`, `capacity`, the slot gauges, `dropped`,
-`resolve_failures` and `version`, it reports `backend` (which renderer is
-actually live), `backend_ready`, `frames`, `skipped_frames`, `last_present_us`
-and `surface: [w, h]`. Three of its fields are booleans specifically so an
-assertion can be written against them: **`has_presented`** (the renderer has
-drawn at least one frame), **`frames_match_backend`** (the pump's frame count
-agrees with the renderer's own, computed producer-side so a reader cannot race
-it), and **`resolver_live`** (the game thread has returned resolved geometry at
-least once — the positive trace that the per-tick refresh is running, since an
+`resolve_failures`, `resolve_overflow` and `version`, it reports `backend`
+(which renderer is actually live), `backend_ready`, `frames`,
+`backend_presents`, `frames_undelivered`, `skipped_frames`, `last_present_us`,
+`present_failures`, `last_present_error` and `surface: [w, h]`.
+
+The three fields worth asserting on are **`present_failures`** (uploads that
+failed — the health check, and falsifiable: break the present and it climbs),
+**`has_presented`** (the renderer has drawn at least one frame), and
+**`resolver_live`** (the game thread has returned resolved geometry at least
+once — the positive trace that the per-tick refresh is running, since an
 unresolved rect is also what you would see if it never ran at all).
+
+**Do not build a check on `frames == backend_presents`.** They answer different
+questions: `frames` counts what the pump handed to the renderer, and
+`backend_presents` counts uploads that actually reached the screen. A frame
+whose dirty region is empty is processed without uploading anything, so they
+differ in normal operation. `frames_undelivered` is their difference, reported
+as a diagnostic rather than a verdict.
 
 ### 4.5 Broker topics
 
