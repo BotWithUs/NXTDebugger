@@ -2,6 +2,10 @@
 
 #include <atomic>
 
+// Holds wire/PROTOCOL.md's published offsets to the real layout. Header-only
+// assertions, included here because this is the module that decodes them.
+#include "wire/ProtocolDocPins.h"
+
 namespace nxtdbg::wire
 {
 

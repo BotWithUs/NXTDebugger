@@ -9,16 +9,111 @@ version = "3.20"
 name = "NXTDebugger"
 version = "0.1.0"
 languages = ["CXX"]
-description = "Standalone Win32 observer for the NXTLibrary wire surface"
+description = "Standalone Win32 observer for the BotWithUs agent wire surface"
 
-# Hard-fail at configure if the sibling NXTLibrary headers we directly #include
-# are missing. The error message tells the next person exactly how to fix it.
+# Wire-schema drift check.
+#
+# wire/ carries the published schema (see wire/README.md) byte-for-byte from the
+# producer, so this project builds standalone from a plain clone — that is the
+# whole point, and why this is NOT a hard requirement on a sibling checkout.
+#
+# When a producer checkout IS present next to us, we hold the copies honest:
+# diff each file and fail configure on drift. In-house that turns a forgotten
+# sync into a build error instead of a wrong decode at runtime. Publicly there
+# is no sibling, the check is skipped, and wire/ is simply the schema.
+#
+# Line endings are normalised out before hashing, on both sides. The check used
+# to hash the files on disk directly, which made its verdict depend on how the
+# tree was materialised rather than on its content: git stores these blobs with
+# LF and core.autocrlf=true smudges them to CRLF on checkout, while sync_wire.ps1
+# copies the producer's bytes verbatim. Those two disagree for any file the
+# producer happens to keep as LF, so a fresh clone or `git worktree add` beside a
+# producer checkout hit a FATAL_ERROR on a tree git itself called clean, and the
+# main checkout only passed because sync_wire.ps1 had written those bytes last.
+# CRLF cannot change a decode, so content equality is the check that was meant.
+#
+# Keep WIRE_FILES in sync with the $wireFiles list in tools/sync_wire.ps1, and
+# keep that script's comparison normalised the same way — if the two disagree,
+# one of them is telling somebody to fix a file that is already correct.
 cmake-before = """
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/ipc/SharedLayout.h)
-    message(FATAL_ERROR
-        "NXTDebugger expects ../NXTLibrary/src/ipc/SharedLayout.h to exist.\\n"
-        "Place this project next to the NXTLibrary checkout in the BotWithUs workspace.")
+set(WIRE_FILES
+    ipc/SharedLayout.h
+    ipc/Events.h
+    ipc/WireCategory.h
+    rpc/MsgPack.h
+    rpc/MsgPack.cpp)
+set(NXTLIB_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src)
+
+if(EXISTS ${NXTLIB_SRC}/ipc/SharedLayout.h)
+    set(_wire_drift "")
+    foreach(_rel IN LISTS WIRE_FILES)
+        if(NOT EXISTS ${NXTLIB_SRC}/${_rel})
+            list(APPEND _wire_drift "${_rel} (missing in producer)")
+        else()
+            file(READ ${NXTLIB_SRC}/${_rel} _src_text)
+            file(READ ${CMAKE_CURRENT_SOURCE_DIR}/wire/${_rel} _dst_text)
+            string(REPLACE "\\r\\n" "\\n" _src_text "${_src_text}")
+            string(REPLACE "\\r\\n" "\\n" _dst_text "${_dst_text}")
+            string(SHA256 _src_hash "${_src_text}")
+            string(SHA256 _dst_hash "${_dst_text}")
+            if(NOT _src_hash STREQUAL _dst_hash)
+                list(APPEND _wire_drift ${_rel})
+            endif()
+        endif()
+    endforeach()
+    if(_wire_drift)
+        string(REPLACE ";" "\\n  " _wire_drift_lines "${_wire_drift}")
+        message(FATAL_ERROR
+            "wire/ has drifted from the producer:\\n  ${_wire_drift_lines}\\n\\n"
+            "Run tools\\\\sync_wire.ps1 to refresh, then re-check the "
+            "kProtocolVersion pin in src/attach/Session.h.")
+    endif()
+    message(STATUS "NXTDebugger: wire/ matches the producer checkout")
+else()
+    message(STATUS "NXTDebugger: no producer checkout beside us — using wire/ as-is")
 endif()
+
+# PROTOCOL.md drift check.
+#
+# The hash check above cannot cover wire/PROTOCOL.md: it has no producer-side
+# original to diff against — it is the normative prose description, maintained
+# here. So the check above stayed green while the document drifted, twice, which
+# is worse than having no check, because green reads as "verified".
+#
+# check_protocol_doc.ps1 closes the names half: event discriminators, event body
+# structs and the RPC method catalog, compared in both directions. It needs no
+# producer checkout for the event halves (both sides are in wire/) and skips the
+# method half when none is present, exactly as the hash check does.
+#
+# The offsets half is the compiler's: src/wire/ProtocolDocPins.h pins every
+# absolute figure the document prints to a real offsetof.
+#
+# Found by absolute path as well as on PATH: this is a Windows-only target, so
+# powershell.exe is always present, and a stripped PATH must not be allowed to
+# turn the gate below into a no-op. Not finding it is therefore fatal rather
+# than a warning — an unrun check that prints a warning nobody reads is the
+# failure mode this whole block exists to remove.
+find_program(NXTDBG_POWERSHELL
+    NAMES pwsh powershell
+    HINTS "$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0")
+if(NOT NXTDBG_POWERSHELL)
+    message(FATAL_ERROR
+        "No PowerShell found, so wire/PROTOCOL.md cannot be checked against the "
+        "wire surface. Put powershell.exe or pwsh on PATH, or pass "
+        "-DNXTDBG_POWERSHELL=<path>.")
+endif()
+
+execute_process(
+    COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_protocol_doc.ps1
+    RESULT_VARIABLE _doc_result
+    OUTPUT_VARIABLE _doc_output
+    ERROR_VARIABLE  _doc_output)
+if(NOT _doc_result EQUAL 0)
+    message(FATAL_ERROR
+        "wire/PROTOCOL.md has drifted from the wire surface:\\n${_doc_output}")
+endif()
+message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
 
 # FreeType: build the standalone static library — no zlib / png / harfbuzz /
 # brotli / bzip2 transitive deps. We only need it as ImGui's font rasterizer.
@@ -57,11 +152,13 @@ sources = [
     "src/attach/*.cpp",
     "src/wire/*.cpp",
     "src/cache/*.cpp",
+    "src/gameval/*.cpp",
     "src/cs2/*.cpp",
     "src/render/*.cpp",
     "src/log/*.cpp",
     "src/rpc/*.cpp",
     "src/panels/*.cpp",
+    "src/overlay/*.cpp",
 ]
 headers = [
     "src/*.h",
@@ -69,17 +166,27 @@ headers = [
     "src/attach/*.h",
     "src/wire/*.h",
     "src/cache/*.h",
+    "src/gameval/*.h",
     "src/cs2/*.h",
     "src/render/*.h",
     "src/log/*.h",
     "src/rpc/*.h",
     "src/panels/*.h",
+    "src/overlay/*.h",
 ]
 compile-features = ["cxx_std_23"]
+# No path here leaves the repository, and that is the point: this project is
+# public. `wire` holds the published schema and nothing else — pointing at a
+# producer checkout instead would put its private headers (game-memory layouts,
+# offsets) one quoted #include away. wire/ mirrors the producer's directory
+# shape, so "ipc/SharedLayout.h" and "rpc/MsgPack.h" resolve as they always have.
+#
+# NXTCacheLibrary is deliberately absent: cache/CacheClient binds NXTCache.dll
+# through LoadLibraryW + GetProcAddress with its own typedefs, so there is no
+# compile-time dependency on it at all — only a runtime one on the DLL.
 include-directories = [
     "src",
-    "../NXTLibrary/src",
-    "../NXTCacheLibrary/src/c_api",
+    "wire",
 ]
 compile-definitions = [
     "WIN32_LEAN_AND_MEAN",
@@ -92,18 +199,18 @@ compile-options = [
 ]
 link-libraries = [
     "opengl32", "gdi32", "user32", "shell32", "advapi32", "shlwapi", "psapi",
+    "dwmapi",
 ]
 link-options = ["/SUBSYSTEM:WINDOWS", "/ENTRY:wWinMainCRTStartup"]
 
-# Splice vendored ImGui sources + the NXTLibrary msgpack codec into the
-# target. Both get /WX narrowed off (vendored / cross-project boundaries
-# don't share our warning posture); our own code keeps warnings-as-errors.
-# This is the improvement over HumanizerLibrary's blanket /WX drop.
+# Splice vendored ImGui sources + the wire msgpack codec into the target. Both
+# get /WX narrowed off (vendored code doesn't share our warning posture); our
+# own code keeps warnings-as-errors. This is the improvement over
+# HumanizerLibrary's blanket /WX drop.
 #
-# MsgPack.cpp is included directly (same precedent as the SharedLayout.h
-# header include) — vendoring it would create a second source of truth for
-# the wire codec, exactly the failure mode the workspace's "producer/consumer
-# wire contract" rule warns against.
+# MsgPack.cpp comes from wire/, not a hand-maintained copy: the producer stays
+# the source of truth and the configure-time drift check above keeps wire/
+# honest, so there is still exactly one definition of the codec.
 cmake-after = """
 set(_imgui_srcs
     ${imgui_SOURCE_DIR}/imgui.cpp
@@ -123,7 +230,17 @@ target_compile_definitions(nxt_debugger PRIVATE
 target_link_libraries(nxt_debugger PRIVATE freetype)
 set_source_files_properties(${_imgui_srcs} PROPERTIES COMPILE_OPTIONS "/WX-;/W0")
 
-set(_msgpack_src ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src/rpc/MsgPack.cpp)
+set(_msgpack_src ${CMAKE_CURRENT_SOURCE_DIR}/wire/rpc/MsgPack.cpp)
 target_sources(nxt_debugger PRIVATE ${_msgpack_src})
 set_source_files_properties(${_msgpack_src} PROPERTIES COMPILE_OPTIONS "/WX-")
+
+# Ship the bundled gameval id->name tables next to the exe. The GameVal module
+# resolves resources/gameval/ relative to the running exe (GetModuleFileNameW),
+# so they must sit beside nxt_debugger.exe. First resource-bundling step in this
+# project — mirrors the "NXTCache.dll lives next to the exe" convention.
+add_custom_command(TARGET nxt_debugger POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/resources
+            $<TARGET_FILE_DIR:nxt_debugger>/resources
+    COMMENT "Copying resources/ next to nxt_debugger.exe")
 """

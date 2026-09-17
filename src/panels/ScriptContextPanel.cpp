@@ -416,10 +416,16 @@ bool ContainsCI(const std::string &haystack, const char *needle)
 
 ImU32 StateColor(const std::string &state)
 {
-    if (state == "RUNNING")  return theme::kGood;
-    if (state == "STARTING") return theme::kInfo;
-    if (state == "STOPPED")  return theme::kTextDim;
-    if (state == "CRASHED")  return theme::kBad;
+    if (state == "RUNNING")   return theme::kGood;
+    if (state == "STARTING")  return theme::kInfo;
+    if (state == "STOPPED")   return theme::kTextDim;
+    if (state == "CRASHED")   return theme::kBad;
+    // Stop-escalation states: the host's watchdog flags a script that won't
+    // leave onLoop, then cuts it off, then writes it off. Produced by
+    // JBotWithUsV2's ScriptRunner alongside the four above.
+    if (state == "STALLED")   return theme::kWarn;
+    if (state == "REVOKED")   return theme::kBad;
+    if (state == "ABANDONED") return theme::kBad;
     return theme::kText;
 }
 

@@ -1,14 +1,19 @@
 #include "Panels.h"
+#include "ItemIcon.h"
 
 #include "app/App.h"
 #include "app/Theme.h"
+#include "render/Texture.h"
 #include "wire/SnapshotReader.h"
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 namespace nxtdbg::panels
 {
@@ -35,20 +40,36 @@ void DrawFilter(FilterBuf &fb)
 
 std::string CacheName(app::App &a, const char *type, int id)
 {
-    if (id < 0 || !a.cache.IsOpen()) return {};
-    std::string json = a.cache.GetJson(type, id);
-    if (json.empty()) return {};
-    const char *p = std::strstr(json.c_str(), "\"name\"");
-    if (!p) return {};
-    p = std::strchr(p, ':');
-    if (!p) return {};
-    ++p;
-    while (*p == ' ' || *p == '\t') ++p;
-    if (*p != '"') return {};
-    ++p;
-    const char *q = std::strchr(p, '"');
-    if (!q) return {};
-    return std::string(p, size_t(q - p));
+    if (id < 0) return {};
+    std::string name;
+    if (a.cache.IsOpen())
+    {
+        std::string json = a.cache.GetJson(type, id);
+        const char *p = json.empty() ? nullptr : std::strstr(json.c_str(), "\"name\"");
+        if (p && (p = std::strchr(p, ':')) != nullptr)
+        {
+            ++p;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p == '"')
+            {
+                ++p;
+                if (const char *q = std::strchr(p, '"'))
+                {
+                    name.assign(p, size_t(q - p));
+                }
+            }
+        }
+    }
+    if (name.empty())
+    {
+        // Fallback: the cache has no display name (locs especially, and any
+        // entity when the cache isn't open) — use the bundled gameval name.
+        if (const char *gv = a.gameval.NameForCacheType(type, id))
+        {
+            name = gv;
+        }
+    }
+    return name;
 }
 
 void TableHeader(const char *cols[], int n)
@@ -60,19 +81,33 @@ void TableHeader(const char *cols[], int n)
     ImGui::TableHeadersRow();
 }
 
+// Numeric cell that renders a "—" dash for the -1 "none" sentinel the wire uses
+// for optional ids (spotAnimId, interactId, animationId).
+void IntOrDash(int v)
+{
+    if (v >= 0)
+    {
+        ImGui::Text("%d", v);
+    }
+    else
+    {
+        ImGui::TextDisabled("—");
+    }
+}
+
 void NpcsTab(app::App &a, const nxt::ipc::Snapshot &s)
 {
     static FilterBuf fb;
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("npcs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("npcs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                    | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Idx", "Type", "Name", "Tile", "HP", "Anim" };
-    TableHeader(cols, 6);
+    const char *cols[] = { "Idx", "Type", "Name", "Tile", "HP", "Anim", "Gfx", "Stance" };
+    TableHeader(cols, 8);
 
     for (uint32_t i = 0; i < s.npcCount; ++i)
     {
@@ -102,6 +137,8 @@ void NpcsTab(app::App &a, const nxt::ipc::Snapshot &s)
             ImGui::TextDisabled("-");
         }
         ImGui::TableSetColumnIndex(5); ImGui::Text("%d", n.animationId);
+        ImGui::TableSetColumnIndex(6); IntOrDash(n.spotAnimId);
+        ImGui::TableSetColumnIndex(7); ImGui::Text("%d", n.stanceId);
     }
     ImGui::EndTable();
 }
@@ -112,13 +149,13 @@ void PlayersTab(const nxt::ipc::Snapshot &s)
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("plyrs", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("plyrs", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                      | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Idx", "Combat", "Tile", "Anim", "Flags" };
-    TableHeader(cols, 5);
+    const char *cols[] = { "Idx", "Combat", "Tile", "Anim", "Gfx", "Stance", "Flags" };
+    TableHeader(cols, 7);
 
     for (uint32_t i = 0; i < s.playerCount; ++i)
     {
@@ -131,8 +168,13 @@ void PlayersTab(const nxt::ipc::Snapshot &s)
         ImGui::TableSetColumnIndex(1); ImGui::Text("%d", p.combatLevel);
         ImGui::TableSetColumnIndex(2); ImGui::Text("%d, %d  p%d", p.tileX, p.tileY, int(p.plane));
         ImGui::TableSetColumnIndex(3); ImGui::Text("%d", p.animationId);
-        ImGui::TableSetColumnIndex(4);
-        if (p.flags & nxt::ipc::kFlagMoving) theme::Pill("moving", theme::kInfo);
+        ImGui::TableSetColumnIndex(4); IntOrDash(p.spotAnimId);
+        ImGui::TableSetColumnIndex(5); ImGui::Text("%d", p.stanceId);
+        ImGui::TableSetColumnIndex(6);
+        if (p.flags & nxt::ipc::kFlagMoving)
+        {
+            theme::Pill("moving", theme::kInfo);
+        }
     }
     ImGui::EndTable();
 }
@@ -143,13 +185,13 @@ void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("locs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("locs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                     | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Type", "Name", "Tile", "Shape", "Rot", "Flags" };
-    TableHeader(cols, 6);
+    const char *cols[] = { "Type", "Name", "Tile", "Shape", "Rot", "Anim", "Interact", "Flags" };
+    TableHeader(cols, 8);
 
     for (uint32_t i = 0; i < s.locationCount; ++i)
     {
@@ -169,7 +211,9 @@ void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
         ImGui::TableSetColumnIndex(2); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
         ImGui::TableSetColumnIndex(3); ImGui::Text("%u", unsigned(l.shape));
         ImGui::TableSetColumnIndex(4); ImGui::Text("%u", unsigned(l.rotation));
-        ImGui::TableSetColumnIndex(5);
+        ImGui::TableSetColumnIndex(5); IntOrDash(l.animationId);
+        ImGui::TableSetColumnIndex(6); IntOrDash(l.interactId);
+        ImGui::TableSetColumnIndex(7);
         if (l.flags & nxt::ipc::kLocFlagHidden)          theme::Pill("hidden",  theme::kBad);
         if (l.flags & nxt::ipc::kLocFlagCombinedSection) theme::Pill("section", theme::kInfo);
         if (l.flags & nxt::ipc::kLocFlagDeleted)         theme::Pill("deleted", theme::kBad);
@@ -177,46 +221,244 @@ void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
     ImGui::EndTable();
 }
 
-void InvTab(app::App &a, const nxt::ipc::Snapshot &s)
+// --- Ground items tab ------------------------------------------------------
+
+// Item-icon decodes admitted per frame (a software model render apiece), so a
+// drop-heavy scene fills in over a few frames instead of hitching once. Mirrors
+// InventoryPanel::kIconsPerFrame.
+constexpr int kGroundIconsPerFrame = 24;
+
+struct GroundRow
 {
-    if (!ImGui::BeginTable("inv", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
-                                   | ImGuiTableFlags_BordersInnerH))
+    int itemId;
+    int qty;
+    int tileX;
+    int tileY;
+    int plane;
+    int dist;   // chebyshev tiles from the local player; -1 when not in-world
+};
+
+struct GroundState
+{
+    FilterBuf               fb;
+    render::TextureCache    icons;
+    std::unordered_set<int> iconFailed;
+    int                     iconBudget = 0;
+    bool                    showIcons  = true;
+};
+
+int Chebyshev(int ax, int ay, int bx, int by)
+{
+    int dx = ax > bx ? ax - bx : bx - ax;
+    int dy = ay > by ? ay - by : by - ay;
+    return dx > dy ? dx : dy;
+}
+
+void CollectGroundRows(GroundState &gs, const nxt::ipc::Snapshot &s,
+                       std::vector<GroundRow> &out)
+{
+    const bool haveSelf = s.self.serverIndex >= 0;
+    char buf[64];
+    for (uint32_t i = 0; i < s.groundItemCount; ++i)
+    {
+        const auto &g = s.groundItems[i];
+        std::snprintf(buf, sizeof(buf), "%d %d %d", g.itemId, g.tileX, g.tileY);
+        if (!gs.fb.Match(gs.fb.text, buf))
+        {
+            continue;
+        }
+        GroundRow row;
+        row.itemId = g.itemId;
+        row.qty    = g.quantity;
+        row.tileX  = g.tileX;
+        row.tileY  = g.tileY;
+        row.plane  = g.plane;
+        row.dist   = haveSelf ? Chebyshev(g.tileX, g.tileY, s.self.tileX, s.self.tileY) : -1;
+        out.push_back(row);
+    }
+}
+
+void SortGroundRows(std::vector<GroundRow> &rows)
+{
+    const ImGuiTableSortSpecs *ss = ImGui::TableGetSortSpecs();
+    if (!ss || ss->SpecsCount == 0)
     {
         return;
     }
-    const char *cols[] = { "InvId", "Slot", "Item", "Qty" };
-    TableHeader(cols, 4);
-
-    for (uint32_t i = 0; i < s.inventoryCount; ++i)
+    const ImGuiTableColumnSortSpecs &c = ss->Specs[0];
+    const bool asc = c.SortDirection == ImGuiSortDirection_Ascending;
+    std::sort(rows.begin(), rows.end(), [&](const GroundRow &x, const GroundRow &y)
     {
-        const auto &h = s.inventories[i];
-        for (uint16_t j = 0; j < h.slotCount; ++j)
+        int xv = x.dist;
+        int yv = y.dist;
+        if (c.ColumnIndex == 1)
         {
-            uint32_t idx = uint32_t(h.firstItemIdx) + j;
-            if (idx >= s.invItemCount) break;
-            const auto &it = s.invItems[idx];
-            if (it.itemId < 0 && it.quantity == 0) continue;
-
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Text("%d", h.invId);
-            ImGui::TableSetColumnIndex(1); ImGui::Text("%u", unsigned(j));
-            ImGui::TableSetColumnIndex(2);
-            if (it.itemId >= 0)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
-                ImGui::Text("%d", it.itemId);
-                ImGui::PopStyleColor();
-                ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-                ImGui::TextUnformatted(CacheName(a, "item", it.itemId).c_str());
-                ImGui::PopStyleColor();
-            }
-            else
-            {
-                ImGui::TextDisabled("(empty)");
-            }
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%d", it.quantity);
+            xv = x.itemId;
+            yv = y.itemId;
         }
+        else if (c.ColumnIndex == 2)
+        {
+            xv = x.qty;
+            yv = y.qty;
+        }
+        return asc ? xv < yv : xv > yv;
+    });
+}
+
+void DrawGroundIconCell(app::App &a, GroundState &gs, int itemId)
+{
+    if (!gs.showIcons)
+    {
+        ImGui::TextDisabled("—");
+        return;
+    }
+    const float box = ImGui::GetTextLineHeight() * 1.3f;
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    DrawItemIcon(a, gs.icons, gs.iconFailed, &gs.iconBudget, itemId, p0, box, false);
+    ImGui::Dummy(ImVec2(box, box));
+}
+
+void DrawGroundRow(app::App &a, GroundState &gs, const GroundRow &g)
+{
+    ImGui::TableNextRow();
+
+    ImGui::TableSetColumnIndex(0);
+    DrawGroundIconCell(a, gs, g.itemId);
+
+    ImGui::TableSetColumnIndex(1);
+    char idb[16];
+    std::snprintf(idb, sizeof(idb), "%d", g.itemId);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
+    ImGui::TextUnformatted(idb);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
+    ImGui::TextUnformatted(CacheName(a, "item", g.itemId).c_str());
+    ImGui::PopStyleColor();
+
+    ImGui::TableSetColumnIndex(2);
+    char qb[16];
+    FormatQty(g.qty, qb, sizeof(qb));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(QtyColor(g.qty)));
+    ImGui::TextUnformatted(qb);
+    ImGui::PopStyleColor();
+
+    ImGui::TableSetColumnIndex(3);
+    ImGui::Text("%d, %d  p%d", g.tileX, g.tileY, g.plane);
+
+    ImGui::TableSetColumnIndex(4);
+    IntOrDash(g.dist);
+}
+
+void GroundToolbar(GroundState &gs)
+{
+    DrawFilter(gs.fb);
+    ImGui::SameLine(0.0f, ImGui::GetFontSize());
+    theme::Toggle("##gicons", &gs.showIcons);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::AlignTextToFramePadding();
+    theme::Subheading("icons");
+}
+
+void GroundTab(app::App &a, const nxt::ipc::Snapshot &s)
+{
+    static GroundState gs;
+    gs.iconBudget = kGroundIconsPerFrame;
+
+    GroundToolbar(gs);
+
+    if (s.groundItemCount == 0)
+    {
+        ImGui::Spacing();
+        theme::Subheading("No ground items in the loaded scene.");
+        return;
+    }
+
+    const float fs = ImGui::GetFontSize();
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+                                | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable;
+    if (!ImGui::BeginTable("ground", 5, flags))
+    {
+        return;
+    }
+    ImGui::TableSetupColumn("Icon", ImGuiTableColumnFlags_NoSort
+                                  | ImGuiTableColumnFlags_WidthFixed, fs * 2.0f);
+    ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Qty",  ImGuiTableColumnFlags_WidthFixed, fs * 5.0f);
+    ImGui::TableSetupColumn("Tile", ImGuiTableColumnFlags_WidthFixed, fs * 8.0f);
+    ImGui::TableSetupColumn("Dist", ImGuiTableColumnFlags_DefaultSort
+                                  | ImGuiTableColumnFlags_WidthFixed, fs * 4.0f);
+    ImGui::TableHeadersRow();
+
+    std::vector<GroundRow> rows;
+    CollectGroundRows(gs, s, rows);
+    SortGroundRows(rows);
+    for (const auto &g : rows)
+    {
+        DrawGroundRow(a, gs, g);
+    }
+    ImGui::EndTable();
+}
+
+// --- Projectiles tab -------------------------------------------------------
+
+// Endpoint cell for a projectile's source / target: the entity server index
+// (a "—" dash for the -1 "fixed tile" sentinel) followed by the raw
+// entity-type tag in dim text. The type is passed through verbatim from the
+// engine, so it's shown as an opaque "t<n>" tag.
+void EndpointCell(int index, int type)
+{
+    IntOrDash(index);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
+    ImGui::Text("t%d", type);
+    ImGui::PopStyleColor();
+}
+
+void ProjectilesTab(const nxt::ipc::Snapshot &s)
+{
+    static FilterBuf fb;
+    DrawFilter(fb);
+    char buf[64];
+
+    if (s.projectileCount == 0)
+    {
+        ImGui::Spacing();
+        theme::Subheading("No in-flight projectiles this tick.");
+        return;
+    }
+
+    if (!ImGui::BeginTable("projs", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+                                     | ImGuiTableFlags_BordersInnerH))
+    {
+        return;
+    }
+    // Gfx = projectile graphic (spot-anim) id; Start/End = launch/land game
+    // cycles bracketing the flight; Source/Target = entity server index + raw
+    // type tag (— = fixed-tile endpoint); From/To = absolute launch/target tiles.
+    const char *cols[] = { "Idx", "Gfx", "Start", "End",
+                           "Source", "Target", "From", "To", "Plane" };
+    TableHeader(cols, 9);
+
+    for (uint32_t i = 0; i < s.projectileCount; ++i)
+    {
+        const auto &p = s.projectiles[i];
+        std::snprintf(buf, sizeof(buf), "%d %d %d", p.projectileId, p.sourceIndex, p.targetIndex);
+        if (!fb.Match(fb.text, buf)) continue;
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0); ImGui::Text("%u", i);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
+        ImGui::Text("%d", p.projectileId);
+        ImGui::PopStyleColor();
+        ImGui::TableSetColumnIndex(2); ImGui::Text("%d", p.startCycle);
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%d", p.endCycle);
+        ImGui::TableSetColumnIndex(4); EndpointCell(p.sourceIndex, p.sourceType);
+        ImGui::TableSetColumnIndex(5); EndpointCell(p.targetIndex, p.targetType);
+        ImGui::TableSetColumnIndex(6); ImGui::Text("%d, %d", p.startTileX, p.startTileY);
+        ImGui::TableSetColumnIndex(7); ImGui::Text("%d, %d", p.endTileX, p.endTileY);
+        ImGui::TableSetColumnIndex(8); ImGui::Text("%d", int(p.plane));
     }
     ImGui::EndTable();
 }
@@ -247,7 +489,8 @@ void DrawEntityBrowser(app::App &a)
         if (ImGui::BeginTabItem("NPCs"))        { NpcsTab(a, *snap);    ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Players"))     { PlayersTab(*snap);    ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Locations"))   { LocsTab(a, *snap);    ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Inventories")) { InvTab(a, *snap);     ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Ground"))      { GroundTab(a, *snap);  ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Projectiles")) { ProjectilesTab(*snap); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     ImGui::End();

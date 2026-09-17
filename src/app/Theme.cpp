@@ -94,7 +94,7 @@ void Apply()
     c[ImGuiCol_NavHighlight]        = Vec4(kAccent);
 }
 
-bool BeginCard(const char *id, const char *title, ImU32 stripeCol, bool fillY)
+bool BeginCard(const char *id, const char *title, ImU32 stripeCol, bool fillHeight)
 {
     const float fs       = ImGui::GetFontSize();
     const float stripeW  = StripeWidth();
@@ -104,11 +104,14 @@ bool BeginCard(const char *id, const char *title, ImU32 stripeCol, bool fillY)
     ImGui::PushStyleColor(ImGuiCol_ChildBg, Vec4(kPanel));
     ImGui::PushStyleColor(ImGuiCol_Border,  Vec4(kBorder));
 
-    // fillY: stretch the card to the parent's remaining height so embedded
-    // scroll lists get real vertical space. Otherwise auto-fit to content.
-    ImGuiChildFlags childFlags = ImGuiChildFlags_Border;
-    if (!fillY) childFlags |= ImGuiChildFlags_AutoResizeY;
-    bool visible = ImGui::BeginChild(id, ImVec2(0, 0), childFlags);
+    // fillHeight cards take the pane's full height (size.y == 0 → fill); content
+    // cards auto-resize to fit. Width always fills (size.x == 0).
+    ImGuiChildFlags flags = ImGuiChildFlags_Border;
+    if (!fillHeight)
+    {
+        flags |= ImGuiChildFlags_AutoResizeY;
+    }
+    bool visible = ImGui::BeginChild(id, ImVec2(0, 0), flags);
 
     if (visible)
     {

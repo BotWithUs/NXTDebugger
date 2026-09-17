@@ -8,7 +8,7 @@
 #include "wire/SnapshotReader.h"
 
 #include "ipc/SharedLayout.h"
-#include "game/Interfaces.h"
+#include "ipc/WireCategory.h"
 
 #include "imgui.h"
 
@@ -19,7 +19,6 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace nxtdbg::panels
@@ -38,6 +37,7 @@ constexpr DWORD    kPickPollMs         = 200;  // 5 Hz cursor sample
 constexpr float    kDiffBadgeSeconds   = 1.0f;
 constexpr uint32_t kEncBufCap          = 256;
 constexpr uint32_t kReplyBufCap        = 1u << 20;   // 1 MiB; tree reply ceiling
+constexpr int32_t  kAutoOpenChildCap   = 16;   // containers w/ more kids start collapsed
 
 // Well-known interface ids — duplicated from
 // JBotWithUsV2/api/.../util/Interfaces.java. Twenty entries max, content-stable
@@ -74,9 +74,17 @@ const char *LookupIfaceName(int32_t id)
     return nullptr;
 }
 
+// Prefer the bundled gameval interface name (1870 entries) and fall back to the
+// curated short table above only when gameval has no entry for this id.
+const char *IfaceName(app::App &a, int32_t id)
+{
+    if (const char *gv = a.gameval.NameForCacheType("if", id)) return gv;
+    return LookupIfaceName(id);
+}
+
 const char *CategoryName(int32_t cat)
 {
-    using nxt::game::interfaces::WireCategory;
+    using nxt::ipc::WireCategory;
     switch (static_cast<WireCategory>(cat))
     {
     case WireCategory::Unknown:  return "Unknown";
@@ -270,7 +278,7 @@ struct OpenDiff
 
 struct PanelState
 {
-    rpc::RpcClient       rpc;
+    rpc::RpcClient      *rpc = nullptr;   // -> app::App::rpc (shared; not owned)
     DWORD                lastAttachedPid = 0;
 
     // Pane 1
@@ -281,13 +289,17 @@ struct PanelState
     // Pane 2
     int32_t              selectedIface   = -1;
     std::vector<Comp>    tree;
-    std::vector<int32_t> treeDepth;
+    std::vector<int32_t> childCount;     // direct children per node (by tree index)
+    // Child indices per node, precomputed at decode. Lets DrawTreeNode recurse
+    // straight into children instead of rescanning the whole node array per
+    // expanded node every frame — turns the tree render from O(N^2) to O(N),
+    // which is what made scrolling large interfaces laggy.
+    std::vector<std::vector<int32_t>> children;
     char                 treeError[160]  = {};
     DWORD                lastTreeFetch   = 0;
     bool                 autoRefresh     = true;
     int                  refreshMs       = static_cast<int>(kTreeRefreshMs);
     char                 nodeFilter[64]  = {};
-    std::unordered_set<int32_t> collapsed;   // comp ids the user has collapsed
 
     // Pane 3
     int32_t              selectedComp    = -1;
@@ -318,26 +330,26 @@ PanelState &State()
 
 void EnsureConnection(app::App &a, PanelState &s)
 {
+    // App owns the shared client's connect/disconnect (App::UpdateRpcConnection);
+    // this panel only points at it and resets its derived state when the
+    // attached pid changes.
+    s.rpc = &a.rpc;
     DWORD pid = a.session.IsOpen() ? a.session.Pid() : 0;
-    if (pid == s.lastAttachedPid && pid != 0 && s.rpc.IsConnected()) return;
-    if (pid != s.lastAttachedPid)
+    if (pid == s.lastAttachedPid)
     {
-        s.rpc.Disconnect();
-        s.prevOpen.clear();
-        s.diffs.clear();
-        s.tree.clear();
-        s.treeDepth.clear();
-        s.selectedIface = -1;
-        s.selectedComp  = -1;
-        s.selectedValid = false;
-        s.pickActive    = false;
-        s.pickInFlight  = false;
-        s.lastAttachedPid = pid;
+        return;
     }
-    if (pid != 0 && !s.rpc.IsConnected())
-    {
-        s.rpc.Connect(pid);
-    }
+    s.prevOpen.clear();
+    s.diffs.clear();
+    s.tree.clear();
+    s.childCount.clear();
+    s.children.clear();
+    s.selectedIface = -1;
+    s.selectedComp  = -1;
+    s.selectedValid = false;
+    s.pickActive    = false;
+    s.pickInFlight  = false;
+    s.lastAttachedPid = pid;
 }
 
 void UpdateDiffs(PanelState &s, const int32_t *open, uint32_t openCount,
@@ -398,12 +410,12 @@ const OpenDiff *FindDiff(const PanelState &s, int32_t id)
 
 bool CallTree(PanelState &s, int32_t iface)
 {
-    if (!s.rpc.IsConnected()) return false;
+    if (!s.rpc || !s.rpc->IsConnected()) return false;
     std::vector<uint8_t> params;
     EncodeIfaceComp(params, iface, 0);
     std::vector<uint8_t> reply;
     reply.reserve(kReplyBufCap);
-    auto st = s.rpc.Call("get_interface_tree", params.data(),
+    auto st = s.rpc->Call("get_interface_tree", params.data(),
                          static_cast<uint32_t>(params.size()),
                          reply, kRpcTimeoutMs);
     if (st != rpc::CallStatus::Ok)
@@ -411,7 +423,8 @@ bool CallTree(PanelState &s, int32_t iface)
         std::snprintf(s.treeError, sizeof(s.treeError),
                       "get_interface_tree status=%d", static_cast<int>(st));
         s.tree.clear();
-        s.treeDepth.clear();
+        s.childCount.clear();
+        s.children.clear();
         return false;
     }
     if (!DecodeTreeReply(reply, s.tree))
@@ -419,26 +432,39 @@ bool CallTree(PanelState &s, int32_t iface)
         std::snprintf(s.treeError, sizeof(s.treeError),
                       "tree reply did not decode");
         s.tree.clear();
-        s.treeDepth.clear();
+        s.childCount.clear();
+        s.children.clear();
         return false;
     }
     s.treeError[0] = 0;
-    s.treeDepth.assign(s.tree.size(), 0);
+    // Count direct children per node so the renderer knows leaf vs container
+    // (and can show a fan-out count). The walk is breadth-first, so a node's
+    // children are scattered in array order — the renderer walks parentIndex
+    // instead, which is why this is the only structural index it needs.
+    s.childCount.assign(s.tree.size(), 0);
+    s.children.assign(s.tree.size(), {});
     for (size_t i = 0; i < s.tree.size(); ++i)
     {
         int32_t pi = s.tree[i].parentIndex;
-        s.treeDepth[i] = (pi < 0) ? 0 : s.treeDepth[pi] + 1;
+        if (pi >= 0 && static_cast<size_t>(pi) < s.tree.size())
+        {
+            ++s.childCount[static_cast<size_t>(pi)];
+            if (static_cast<size_t>(pi) != i)   // guard a self-parent in a bad reply
+            {
+                s.children[static_cast<size_t>(pi)].push_back(static_cast<int32_t>(i));
+            }
+        }
     }
     return true;
 }
 
 bool CallGetComponent(PanelState &s, int32_t iface, int32_t comp, Comp &out)
 {
-    if (!s.rpc.IsConnected()) return false;
+    if (!s.rpc || !s.rpc->IsConnected()) return false;
     std::vector<uint8_t> params;
     EncodeIfaceComp(params, iface, comp);
     std::vector<uint8_t> reply;
-    auto st = s.rpc.Call("get_component", params.data(),
+    auto st = s.rpc->Call("get_component", params.data(),
                          static_cast<uint32_t>(params.size()),
                          reply, kRpcTimeoutMs);
     if (st != rpc::CallStatus::Ok) return false;
@@ -451,11 +477,11 @@ bool CallGetComponent(PanelState &s, int32_t iface, int32_t comp, Comp &out)
 
 bool CallFindAt(PanelState &s, int32_t sx, int32_t sy, Comp &out)
 {
-    if (!s.rpc.IsConnected()) return false;
+    if (!s.rpc || !s.rpc->IsConnected()) return false;
     std::vector<uint8_t> params;
     EncodeScreenXY(params, sx, sy);
     std::vector<uint8_t> reply;
-    auto st = s.rpc.Call("find_component_at", params.data(),
+    auto st = s.rpc->Call("find_component_at", params.data(),
                          static_cast<uint32_t>(params.size()),
                          reply, kRpcTimeoutMs);
     if (st != rpc::CallStatus::Ok) return false;
@@ -541,7 +567,7 @@ void ClearSelection(PanelState &s)
     s.selectedComp  = -1;
     s.selectedValid = false;
     s.tree.clear();
-    s.treeDepth.clear();
+    s.childCount.clear();
     s.treeError[0]  = 0;
 }
 
@@ -566,7 +592,7 @@ void HandleStaleTree(PanelState &s, const int32_t *open, uint32_t openCount)
 void UpdatePickMode(app::App &a, PanelState &s)
 {
     if (!s.pickActive) { s.pickInFlight = false; return; }
-    if (!s.rpc.IsConnected()) return;
+    if (!s.rpc || !s.rpc->IsConnected()) return;
     if (s.pickInFlight) return;
 
     DWORD now = GetTickCount();
@@ -600,13 +626,13 @@ void UpdatePickMode(app::App &a, PanelState &s)
 // Pane 1 — Open Interfaces
 // ---------------------------------------------------------------------------
 
-bool RowMatchesFilter(int32_t id, const char *filter)
+bool RowMatchesFilter(app::App &a, int32_t id, const char *filter)
 {
     if (!filter || !filter[0]) return true;
     char idBuf[16];
     std::snprintf(idBuf, sizeof(idBuf), "%d", id);
     if (std::strstr(idBuf, filter)) return true;
-    const char *name = LookupIfaceName(id);
+    const char *name = IfaceName(a, id);
     if (name)
     {
         // Case-insensitive substring.
@@ -616,9 +642,9 @@ bool RowMatchesFilter(int32_t id, const char *filter)
             for (size_t j = 0; filter[j]; ++j)
             {
                 if (!name[i + j]) { ok = false; break; }
-                char a = name[i + j];   if (a >= 'a' && a <= 'z') a = static_cast<char>(a - 32);
-                char b = filter[j];     if (b >= 'a' && b <= 'z') b = static_cast<char>(b - 32);
-                if (a != b) { ok = false; break; }
+                char ca = name[i + j];   if (ca >= 'a' && ca <= 'z') ca = static_cast<char>(ca - 32);
+                char cb = filter[j];     if (cb >= 'a' && cb <= 'z') cb = static_cast<char>(cb - 32);
+                if (ca != cb) { ok = false; break; }
             }
             if (ok) return true;
         }
@@ -628,10 +654,10 @@ bool RowMatchesFilter(int32_t id, const char *filter)
 
 void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
 {
-    if (!RowMatchesFilter(id, s.ifaceFilter)) return;
+    if (!RowMatchesFilter(a, id, s.ifaceFilter)) return;
 
     char label[96];
-    const char *name = LookupIfaceName(id);
+    const char *name = IfaceName(a, id);
     if (name) std::snprintf(label, sizeof(label), "%d  %s", id, name);
     else      std::snprintf(label, sizeof(label), "iface %d", id);
 
@@ -668,8 +694,7 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
 void DrawPaneOpenIfaces(app::App &a, PanelState &s,
                         const int32_t *open, uint32_t openCount)
 {
-    if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true))
-    { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true)) { theme::EndCard(); return; }
 
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##ifacefilter", "filter (id or name)",
@@ -706,7 +731,7 @@ bool NodeMatchesFilter(const Comp &c, const char *filter)
 
 void NodeSummary(const Comp &c, char *out, size_t cap)
 {
-    using nxt::game::interfaces::WireCategory;
+    using nxt::ipc::WireCategory;
     const auto cat = static_cast<WireCategory>(c.category);
     if (cat == WireCategory::Text && !c.text.empty())
     {
@@ -747,37 +772,141 @@ void DrawTreeControls(PanelState &s)
     }
 }
 
-void DrawTreeNodeRow(app::App &a, PanelState &s, size_t i)
+// Compose one row's text: identity + category + child fan-out + content summary.
+// Dynamic children of a container share their parent's comp id and differ only
+// by sub (the agent stamps comp_id from the parent, sub_id per child), so the
+// sub index is what tells one "comp 5" child from the next.
+void BuildNodeLabel(app::App &a, const Comp &c, int32_t kids, char *out, size_t cap)
 {
-    const Comp &c = s.tree[i];
-    if (!NodeMatchesFilter(c, s.nodeFilter)) return;
-
-    ImGui::PushID(static_cast<int>(i));
-    char header[160];
+    char ident[40];
+    if (c.sub >= 0)
+    {
+        std::snprintf(ident, sizeof(ident), "comp %d \xC2\xB7 sub %d", c.comp, c.sub);
+    }
+    else
+    {
+        std::snprintf(ident, sizeof(ident), "comp %d", c.comp);
+    }
+    // Component symbolic name from the bundled gameval table. component.json is
+    // keyed by (iface<<16)|comp; from the beta cache (build 947/948), so very
+    // recent components may be unnamed.
+    char name[80] = {};
+    if (const char *gv = a.gameval.ComponentName(c.iface, c.comp))
+    {
+        std::snprintf(name, sizeof(name), "  %s", gv);
+    }
     char summary[120];
     NodeSummary(c, summary, sizeof(summary));
-    std::snprintf(header, sizeof(header), "%*scomp %d  [%s]  %s",
-                  s.treeDepth[i] * 2, "",
-                  c.comp, CategoryName(c.category), summary);
+    char fanout[16] = {};
+    if (kids > 0)
+    {
+        std::snprintf(fanout, sizeof(fanout), "  (%d)", kids);
+    }
+    std::snprintf(out, cap, "%s%s  [%s]%s  %s",
+                  ident, name, CategoryName(c.category), fanout, summary);
+}
 
-    bool isSelected = s.selectedValid
-                   && s.selected.iface == c.iface
-                   && s.selected.comp  == c.comp;
+bool IsNodeSelected(const PanelState &s, const Comp &c)
+{
+    return s.selectedValid
+        && s.selected.iface == c.iface
+        && s.selected.comp  == c.comp
+        && s.selected.sub   == c.sub;
+}
+
+ImGuiTreeNodeFlags NodeFlags(const PanelState &s, const Comp &c, bool isLeaf)
+{
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
+                             | ImGuiTreeNodeFlags_OpenOnDoubleClick
+                             | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (isLeaf)
+    {
+        flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_Bullet
+               | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    }
+    if (IsNodeSelected(s, c))
+    {
+        flags |= ImGuiTreeNodeFlags_Selected;
+    }
+    return flags;
+}
+
+// Render node `i` and (when expanded) its children, found by scanning for the
+// nodes whose parentIndex is `i`. Rendering by parentIndex — not array order —
+// is what keeps each child directly under its real parent regardless of the
+// agent's breadth-first walk order.
+void DrawTreeNode(app::App &a, PanelState &s, int32_t i)
+{
+    const Comp   &c      = s.tree[static_cast<size_t>(i)];
+    const int32_t kids   = s.childCount[static_cast<size_t>(i)];
+    const bool    isLeaf = (kids == 0);
+
+    char label[200];
+    BuildNodeLabel(a, c, kids, label, sizeof(label));
+
+    // Tame long inventory / sprite runs: big containers start collapsed once,
+    // then honour whatever the user toggles (ImGui remembers per node id).
+    if (!isLeaf)
+    {
+        ImGui::SetNextItemOpen(kids <= kAutoOpenChildCap, ImGuiCond_Once);
+    }
 
     ImU32 color = (c.hidden == 1) ? theme::kTextDim : theme::kText;
+    ImGui::PushID(i);
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color));
-    if (ImGui::Selectable(header, isSelected))
+    bool open = ImGui::TreeNodeEx("##node", NodeFlags(s, c, isLeaf), "%s", label);
+    ImGui::PopStyleColor();
+
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
     {
         AdoptComponent(a, s, c);
     }
-    ImGui::PopStyleColor();
+    if (open && !isLeaf)
+    {
+        // Recurse straight into the precomputed child list (O(children)) instead
+        // of rescanning the whole node array (O(N)). The agent's BFS emits parent
+        // before child, so every child index is > i — recursion always terminates.
+        if (static_cast<size_t>(i) < s.children.size())
+        {
+            for (int32_t k : s.children[static_cast<size_t>(i)])
+            {
+                DrawTreeNode(a, s, k);
+            }
+        }
+        ImGui::TreePop();
+    }
     ImGui::PopID();
+}
+
+// Filter mode bypasses the hierarchy: a flat list of matching nodes, so a
+// search hit deep in a collapsed subtree is still visible.
+void DrawTreeFiltered(app::App &a, PanelState &s)
+{
+    const int32_t n = static_cast<int32_t>(s.tree.size());
+    for (int32_t i = 0; i < n; ++i)
+    {
+        const Comp &c = s.tree[static_cast<size_t>(i)];
+        if (!NodeMatchesFilter(c, s.nodeFilter))
+        {
+            continue;
+        }
+        char label[200];
+        BuildNodeLabel(a, c, s.childCount[static_cast<size_t>(i)], label, sizeof(label));
+        ImU32 color = (c.hidden == 1) ? theme::kTextDim : theme::kText;
+        ImGui::PushID(i);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color));
+        if (ImGui::Selectable(label, IsNodeSelected(s, c)))
+        {
+            AdoptComponent(a, s, c);
+        }
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
 }
 
 void DrawPaneTree(app::App &a, PanelState &s)
 {
-    if (!theme::BeginCard("iface.tree", "COMPONENT TREE", theme::kAccent, true))
-    { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.tree", "COMPONENT TREE", theme::kAccent, true)) { theme::EndCard(); return; }
 
     DrawTreeControls(s);
 
@@ -802,9 +931,20 @@ void DrawPaneTree(app::App &a, PanelState &s)
     ImGui::Separator();
 
     ImGui::BeginChild("##nodes", ImVec2(0, 0), 0);
-    for (size_t i = 0; i < s.tree.size(); ++i)
+    if (s.nodeFilter[0])
     {
-        DrawTreeNodeRow(a, s, i);
+        DrawTreeFiltered(a, s);
+    }
+    else
+    {
+        const int32_t n = static_cast<int32_t>(s.tree.size());
+        for (int32_t i = 0; i < n; ++i)
+        {
+            if (s.tree[static_cast<size_t>(i)].parentIndex < 0)
+            {
+                DrawTreeNode(a, s, i);
+            }
+        }
     }
     ImGui::EndChild();
 
@@ -822,11 +962,19 @@ void KeyLineInt(const char *label, int32_t v)
     theme::KeyLine(label, buf);
 }
 
-void DrawSelectedIdentity(const Comp &c)
+void DrawSelectedIdentity(app::App &a, const Comp &c)
 {
     KeyLineInt("iface", c.iface);
     KeyLineInt("comp",  c.comp);
     KeyLineInt("sub",   c.sub);
+    if (const char *ifn = IfaceName(a, c.iface))
+    {
+        theme::KeyLine("iface name", ifn);
+    }
+    if (const char *cn = a.gameval.ComponentName(c.iface, c.comp))
+    {
+        theme::KeyLine("gameval", cn);
+    }
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%d (%s)", c.type, CategoryName(c.category));
     theme::KeyLine("type", buf);
@@ -914,8 +1062,7 @@ void DrawSelectedActions(app::App &a, PanelState &s)
 
 void DrawPaneSelected(app::App &a, PanelState &s)
 {
-    if (!theme::BeginCard("iface.sel", "SELECTED COMPONENT", theme::kAccent, true))
-    { theme::EndCard(); return; }
+    if (!theme::BeginCard("iface.sel", "SELECTED COMPONENT")) { theme::EndCard(); return; }
     if (!s.selectedValid)
     {
         ImGui::TextDisabled("(no selection)");
@@ -923,7 +1070,7 @@ void DrawPaneSelected(app::App &a, PanelState &s)
         return;
     }
     const Comp &c = s.selected;
-    DrawSelectedIdentity(c);
+    DrawSelectedIdentity(a, c);
     theme::AccentRule();
     DrawSelectedGeometry(s, c);
     theme::AccentRule();
@@ -936,6 +1083,53 @@ void DrawPaneSelected(app::App &a, PanelState &s)
 // ---------------------------------------------------------------------------
 // Per-frame top-level update + layout
 // ---------------------------------------------------------------------------
+
+// Mirror the box-relevant slice of the freshly-fetched tree into the shared
+// App view-model so the external overlay can paint it. Sole writer of
+// app::App::interfaceView. Cheap: a shallow copy of a few hundred small PODs,
+// piggybacking on data the panel already fetched — no extra RPC. The agent
+// already reports x/y in absolute client space (it accumulates the parent chain
+// and the sub-interface mount offset producer-side), so boxes copy x/y/w/h
+// verbatim — no debugger-side coordinate math.
+void PublishOverlayView(app::App &a, PanelState &s)
+{
+    app::InterfaceView &v = a.interfaceView;
+    v.iface      = s.selectedIface;
+    v.pickActive = s.pickActive;
+    v.hoverComp  = s.selectedValid ? s.selected.comp : -1;
+    v.hoverSub   = s.selectedValid ? s.selected.sub  : -1;
+    v.boxes.clear();
+    v.boxes.reserve(s.tree.size());
+
+    for (size_t i = 0; i < s.tree.size(); ++i)
+    {
+        const Comp &c = s.tree[i];
+        if (c.hidden == 1) continue;   // overlay paints visible nodes only
+        app::OverlayBox b;
+        b.x        = c.x;
+        b.y        = c.y;
+        b.w        = c.w;
+        b.h        = c.h;
+        b.category = c.category;
+        b.comp     = c.comp;
+        b.sub      = c.sub;
+        b.hidden   = c.hidden;
+        // Sub-components share comp with their parent; show the sub so siblings
+        // are distinguishable on the overlay too (mirrors the tree label).
+        if (c.sub >= 0)
+        {
+            std::snprintf(b.label, sizeof(b.label), "%d\xC2\xB7%d %s",
+                          c.comp, c.sub, CategoryName(c.category));
+        }
+        else
+        {
+            std::snprintf(b.label, sizeof(b.label), "%d %s",
+                          c.comp, CategoryName(c.category));
+        }
+        v.boxes.push_back(b);
+    }
+    ++v.rev;
+}
 
 void MaybeAutoRefresh(app::App &a, PanelState &s)
 {
@@ -950,7 +1144,8 @@ void MaybeAutoRefresh(app::App &a, PanelState &s)
     {
         for (const auto &n : s.tree)
         {
-            if (n.iface == s.selected.iface && n.comp == s.selected.comp)
+            if (n.iface == s.selected.iface && n.comp == s.selected.comp
+                && n.sub == s.selected.sub)
             {
                 AdoptComponent(a, s, n);
                 break;
@@ -987,10 +1182,18 @@ void DrawInterfacePanel(app::App &a)
     }
     MaybeAutoRefresh(a, s);
     UpdatePickMode(a, s);
+    PublishOverlayView(a, s);
 
-    const float fs = ImGui::GetFontSize();
-    const float colA = fs * 22;
-    const float colB = fs * 40;
+    // Pane widths: cap at comfortable em widths on a wide window, but shrink to
+    // a fraction of the available width when the window is narrow — docked, or
+    // hi-DPI where GetFontSize() is already ~2x and fs*22 + fs*40 alone can
+    // exceed the whole window. Without this the tree + selected panes render
+    // off the right edge and only Open Interfaces is visible. paneC takes the
+    // remainder, floored so it never collapses to nothing.
+    const float fs    = ImGui::GetFontSize();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float colA  = std::min(fs * 22.0f, avail * 0.28f);
+    const float colB  = std::min(fs * 40.0f, avail * 0.44f);
 
     ImGui::BeginChild("##paneA", ImVec2(colA, 0), 0);
     DrawPaneOpenIfaces(a, s, open, openCount);

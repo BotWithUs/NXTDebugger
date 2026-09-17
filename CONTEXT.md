@@ -18,9 +18,19 @@ field names byte-for-byte); the debugger UI uses the names defined here.
 - **Session.** The RAII container around one open mapping. Owns the
   `HANDLE mapping`, the `void *view`, and the wide-string last-error
   buffer. Move-only; copying would double-close.
-- **Tick.** One advance of `Snapshot::tickId` — published by the producer's
-  `MainLogic` detour. The debugger's status dot pulses on the frame the
-  tick changes; panels recompute their state from the new front buffer.
+- **Tick** (server tick). One advance of `Snapshot::serverTick` — the server's
+  600ms game-logic step, and the clock script authors reason in. The Snapshot
+  panel leads with it and `kEventTick` fires once per advance.
+- **Game cycle.** One advance of `Snapshot::gameCycle` — the client's own ~20ms
+  main-loop counter, ~30 per server tick. This is the unit
+  `ProjectileEntry::startCycle`/`endCycle` are stamped in.
+- **Publish sequence.** One advance of `Snapshot::publishSeq` — the producer's
+  own republish counter, same ~20ms cadence as the game cycle but a different
+  number space (it starts at 1 when the agent attaches, so never compare the
+  two). The debugger's status dot pulses on it because it is the field that
+  moves on every republish; panels recompute from the new front buffer.
+  Through v17 this field was misnamed `tickId`, which is why anything that
+  paced off it ran ~30x fast.
 - **Snapshot.** The POD struct at `Local\nxt_snapshot_<pid>` + double-buffer
   offset. The debugger reads it lock-free via acquire-load on `frontIdx`.
 - **Event ring.** The SPMC ring inside the same mapping. The debugger keeps
@@ -44,29 +54,43 @@ field names byte-for-byte); the debugger UI uses the names defined here.
   (`panels/InterfacePanel.cpp`) for visually walking the live RS3 UI:
   open interfaces from the snapshot, full component tree from
   `get_interface_tree`, and the field dump of the selected component.
-  Owns its own pipe-slot — a third sync `RpcClient` alongside the RPC
-  console and the tap.
+  As of Phase 7 it no longer owns a private pipe slot — it calls through
+  the shared **Shared RPC client** (`App::rpc`, below) alongside the other
+  round-trip panels.
 - **Pick mode.** The Interface panel's toggle that polls the cursor at
   5 Hz, sends each cursor sample to the agent's new `find_component_at`
   RPC, and auto-selects whatever component the agent reports under the
   pointer. Bounded to one in-flight RPC at a time — moving the mouse
   faster doesn't queue calls.
 
-## Reserved for later phases
+## Shipped surfaces (formerly "reserved")
 
-- **Topic** *(Phase 3, no UI yet)*. A named subscription channel exposed by
-  the agent's broker. Initial topics planned: `rpc.tap`, `script.context`,
-  `script.trace`, `script.state`, `script.annotation`.
-- **Tap** *(Phase 3, no UI yet)*. The specific topic the agent publishes
-  its own processed-RPC stream onto: `rpc.tap`. A passive observer; no
-  framework changes required.
-- **ScriptContext** *(Phase 4, no UI yet)*. The umbrella topic family
-  frameworks voluntarily publish into to surface script state / trace
-  steps / annotations to debugger panels.
-- **Annotation** *(Phase 4, no UI yet)*. One framework-emitted marker
-  associated with a tick + tag (e.g. "started boss attempt", "entered
-  bank state"). Rendered inline in the Event tail and on the (planned)
-  scene view.
-- **Manifest** *(Phase 2, no UI yet)*. The catalog of available RPC
-  methods + their parameter shapes. Either client-side hand-maintained
-  list or a `_meta.methods` RPC the agent exposes.
+- **Topic / Tap / ScriptContext / Annotation** *(Phases 3–4, SHIPPED)*. The
+  broker's `rpc.tap` processed-RPC stream renders in the **RPC Tap** panel;
+  frameworks' `script.context` state / trace / annotation streams render in
+  the **Script Context** panel. Both ride the shared `App::tap` push
+  connection — one pipe slot for all push topics.
+- **Manifest** *(SHIPPED)*. Covered by runtime `rpc.list_methods` discovery
+  plus the curated param-hint table (`rpc/Methods.cpp`): the RPC console
+  renders typed forms for the curated methods and raw params for the rest.
+
+## Phase 7 vocabulary
+
+- **Ground tab.** The 4th Entities-panel tab over `Snapshot::groundItems[]`
+  — every alive ground-item stack in the loaded scene, with item icon /
+  name / qty / tile and chebyshev distance from the local player.
+- **Shared RPC client.** `App::rpc` — one synchronous `RpcClient` the whole
+  debugger shares for round-trip RPC (Interface, Var Watcher, Obj Vars,
+  Action History, Session). Connect / disconnect tracked in
+  `App::UpdateRpcConnection`, mirroring the shared `App::tap` for push.
+  Keeps the debugger at a single request/reply pipe slot.
+- **Var Watcher.** Panel that polls watched varp / varc-int / varc-string
+  ids over the batched read RPCs (`get_varps` / `get_varcs_*`) and flashes a
+  row on change. Varbits have no read RPC, so varbit rows update only from
+  `kEventVarbitChange`.
+- **Obj vars.** Per-item variables (augment XP, charges, …) read via
+  `get_obj_vars`; surfaced as an opt-in slot dot + tooltip in the Inventory
+  panel, refreshed on `kEventObjVarChange`.
+- **Session panel.** Token / session health — `get_token_refresher` expiry
+  countdown + status dot, a `trigger_token_refresh` button, and a timeline
+  of the token-refresh ring events (fired / refreshed / failed = 3 / 4 / 5).

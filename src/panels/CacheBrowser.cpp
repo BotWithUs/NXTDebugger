@@ -104,6 +104,7 @@ struct BrowserState
     char filter[64] = {};
     std::string      filterApplied;   // last filter RecomputeFiltered ran on
     bool             idsDirty = true;
+    bool             idsFromGameval = false;   // cache returned none -> gameval id space
     std::vector<int> filtered;
 
     std::unordered_map<int, std::string> nameCache;   // current-type id -> name
@@ -210,20 +211,35 @@ bool ContainsNoCase(const char *hay, const char *needle)
 // Cache open card (compact; shares the App-level handle with Cache lookup)
 // ---------------------------------------------------------------------------
 
+bool DirExists(const wchar_t *path)
+{
+    DWORD attr = GetFileAttributesW(path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 void DefaultCachePath(char *out, size_t n)
 {
+    // Probe the usual NXT cache roots and pick the first that exists, so "Open"
+    // works without retyping. The standard Jagex Launcher install keeps the
+    // js5-*.jcache files under ProgramData; older/standalone clients used
+    // LOCALAPPDATA. Falls back to the ProgramData path when neither is present.
+    wchar_t progData[MAX_PATH];
+    std::swprintf(progData, MAX_PATH, L"%s", L"C:\\ProgramData\\Jagex\\RuneScape");
+
+    wchar_t localCache[MAX_PATH] = {};
     wchar_t local[MAX_PATH];
-    DWORD got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    wchar_t w[MAX_PATH];
-    if (got == 0 || got >= MAX_PATH)
+    DWORD   got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (got != 0 && got < MAX_PATH)
     {
-        std::swprintf(w, MAX_PATH, L"%s", L"C:\\");
+        std::swprintf(localCache, MAX_PATH, L"%s\\Jagex\\RuneScape\\Cache", local);
     }
-    else
+
+    const wchar_t *chosen = progData;
+    if (!DirExists(progData) && localCache[0] && DirExists(localCache))
     {
-        std::swprintf(w, MAX_PATH, L"%s\\Jagex\\RuneScape\\Cache", local);
+        chosen = localCache;
     }
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, out, static_cast<int>(n), nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, chosen, -1, out, static_cast<int>(n), nullptr, nullptr);
 }
 
 void DrawCacheOpen(app::App &a)
@@ -278,12 +294,21 @@ void ReloadIds(app::App &a, BrowserState &s)
     s.nameIndexBuilt = false;
     s.nameIndexPos  = 0;
     s.idsDirty      = true;
+    s.idsFromGameval = false;
     if (kBrowseTypes[s.typeIdx].synthetic)
     {
         s.ids.clear();   // varp has no enumerable def list
         return;
     }
     s.ids = a.cache.ListTypeIds(TypeName(s));
+    if (s.ids.empty())
+    {
+        // The cache couldn't enumerate this type (old/absent NXTCache.dll export,
+        // or a cache dir with no data) — fall back to the bundled gameval id
+        // space so the browser is still usable for id/name lookup.
+        a.gameval.ListIds(TypeName(s), s.ids);
+        s.idsFromGameval = !s.ids.empty();
+    }
 }
 
 const char *ResolveName(app::App &a, BrowserState &s, int id, int *budget)
@@ -313,6 +338,15 @@ const char *ResolveName(app::App &a, BrowserState &s, int id, int *budget)
             {
                 nm = n->strVal;
             }
+        }
+    }
+    if (nm.empty())
+    {
+        // Fallback: the cache has no display name (locs, config types, …) — use
+        // the bundled gameval symbolic name instead.
+        if (const char *gv = a.gameval.NameForCacheType(TypeName(s), id))
+        {
+            nm = gv;
         }
     }
     auto res = s.nameCache.emplace(id, std::move(nm));
@@ -466,6 +500,19 @@ void DrawTypeCombo(app::App &a, BrowserState &s)
     char count[24];
     std::snprintf(count, sizeof(count), "%zu", s.ids.size());
     theme::Pill(count, theme::kAccentSoft, theme::kAccent);
+    if (s.idsFromGameval)
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, Vec4(theme::kTextDim));
+        ImGui::TextUnformatted("(gameval)");
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("The cache returned no ids for this type, so ids are\n"
+                              "listed from the bundled gameval tables. Per-id JSON\n"
+                              "detail still needs a working cache.");
+        }
+    }
 }
 
 void DrawNameIndexControl(BrowserState &s)
@@ -534,7 +581,12 @@ void DrawSyntheticVarpEntry(app::App &a, BrowserState &s)
 
 void DrawLeftPane(app::App &a, BrowserState &s)
 {
-    if (!theme::BeginCard("cbrowse.list", "TYPES"))
+    // fillHeight for real types: the card hosts a scrolling id list that fills
+    // remaining space, so the card must claim the pane's full height (an
+    // auto-resize card would collapse the list to a sliver). varp shows a small
+    // content block instead, so it stays a content-sized card.
+    const bool fillHeight = !kBrowseTypes[s.typeIdx].synthetic;
+    if (!theme::BeginCard("cbrowse.list", "TYPES", theme::kAccent, fillHeight))
     {
         theme::EndCard();
         return;
@@ -745,6 +797,7 @@ void DrawDetailHeader(app::App &a, BrowserState &s)
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleColor();
 
+    bool shownName = false;
     if (s.detailValid)
     {
         const cache::JsonValue *n = s.detail.Find("name");
@@ -752,6 +805,17 @@ void DrawDetailHeader(app::App &a, BrowserState &s)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, Vec4(theme::kAccent));
             ImGui::TextUnformatted(n->strVal.c_str());
+            ImGui::PopStyleColor();
+            shownName = true;
+        }
+    }
+    if (!shownName)
+    {
+        // No cache display name — fall back to the gameval symbolic name.
+        if (const char *gv = a.gameval.NameForCacheType(TypeName(s), s.selectedId))
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, Vec4(theme::kAccent));
+            ImGui::TextUnformatted(gv);
             ImGui::PopStyleColor();
         }
     }
@@ -860,14 +924,25 @@ void DrawParams(app::App &a, BrowserState &s, const cache::JsonValue &params)
     {
         int paramId = std::atoi(kv.first.c_str());
         const std::string &tn = ParamTypeName(a, s, paramId);
-        char left[80];
-        if (tn.empty())
+        const char *pname = a.gameval.NameForCacheType("param", paramId);
+        char left[160];
+        // Keep the id visible; append the param's gameval name (param.json) and,
+        // when known, its value-type (which also drives the cross-link below).
+        if (pname && !tn.empty())
         {
-            std::snprintf(left, sizeof(left), "%d", paramId);
+            std::snprintf(left, sizeof(left), "%d  %s · %s", paramId, pname, tn.c_str());
+        }
+        else if (pname)
+        {
+            std::snprintf(left, sizeof(left), "%d  %s", paramId, pname);
+        }
+        else if (!tn.empty())
+        {
+            std::snprintf(left, sizeof(left), "%d · %s", paramId, tn.c_str());
         }
         else
         {
-            std::snprintf(left, sizeof(left), "%d · %s", paramId, tn.c_str());
+            std::snprintf(left, sizeof(left), "%d", paramId);
         }
         std::string val = kv.second.AsString();
         const char *lt = kv.second.IsNumber() ? ParamLinkType(tn) : nullptr;
@@ -963,6 +1038,12 @@ void DrawVarpDetail(app::App &a, BrowserState &s)
     ImGui::TextUnformatted(hdr);
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopStyleColor();
+    if (const char *gv = a.gameval.NameForCacheType("varp", s.selectedId))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, Vec4(theme::kAccent));
+        ImGui::TextUnformatted(gv);
+        ImGui::PopStyleColor();
+    }
 
     if (!s.varpMapBuilt)
     {
