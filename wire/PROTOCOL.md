@@ -5,8 +5,12 @@ it, from **any language**. This is the normative description of the bytes; the
 headers in this directory are the same contract expressed in C++.
 
 Everything here is little-endian x64. Structs use natural alignment with no
-packing pragmas, and every offset below was generated from the headers rather
-than written by hand.
+packing pragmas. Every absolute offset and size below is pinned to a real
+`offsetof` by compile-time assertions in the reference consumer
+(`src/wire/ProtocolDocPins.h`), so a layout change breaks its build instead of
+quietly invalidating this page; the event and method catalogues are held to the
+producer the same way by `tools/check_protocol_doc.ps1`. Trust the numbers, but
+prefer the header fields where one is offered (§2.2).
 
 The agent exposes two independent surfaces:
 
@@ -202,6 +206,18 @@ Tile coordinates are **absolute world tiles**. `plane` is 0..3.
 **`PlayerEntry`** (28) — `serverIndex` 0, `tileX` 4, `tileY` 6, `plane` 8,
 `flags` 9, `followingIndex` 10, `animationId` 12, `stanceId` 16,
 `combatLevel` 20, `spotAnimId` 24.
+
+*On `spotAnimId`*: this is the graphic playing **on** that entity, `-1` for none,
+and it is a recent arrival — through most of v19 the producer read the wrong
+object for entity-attached graphics, so the field was permanently `-1` on
+`NpcEntry` / `PlayerEntry` / `LocalPlayer` and event type 72 only ever fired
+world-anchored. Both now report. Treat a consumer that saw nothing here as
+having been correct at the time rather than broken. A single graphic is reached
+through several of the entity's child nodes, so the producer dedupes on the
+owning entity: expect **one** event per graphic instance, not one per node. The
+dedupe keys on identity rather than on `spotAnimId`, so two concurrent casts of
+the same graphic stay distinct. World-anchored graphics are a separate list —
+`query_spot_anims` (§4.4), not these fields.
 
 **`LocationEntry`** (20) — scenery. `typeId` 0, `interactId` 4, `animationId` 8,
 `tileX` 12, `tileY` 14, `plane` 16, `shape` 17, `rotation` 18, `flags` 19.
@@ -509,14 +525,14 @@ right way to target a specific agent build rather than hardcoding this list.
 | Broker | `_debug.subscribe`, `_debug.unsubscribe`, `_debug.publish` |
 | Clocks / state | `get_game_cycle`, `get_login_state` |
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
-| Session | `set_world`, `change_login_state`, `login_to_lobby`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
+| Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
 | Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
-| World map | `query_world_map_elements` |
+| Scene queries | `query_spot_anims`, `query_world_map_elements` |
 
-Three gaps worth knowing before you design around them:
+Four gaps worth knowing before you design around them:
 
 - **There is no `get_varbit`.** Varbits decode consumer-side from a backing varp
   plus the varbit definition's bit range, or arrive via event type 11.
@@ -530,7 +546,22 @@ Three gaps worth knowing before you design around them:
   FFI-shaped for any language, driving the agent through `queue_action` WALK
   (action id 23) clicks. Event types 60/61/62 stay allocated as permanently
   reserved and are never emitted.
-- `set_world` and `change_login_state` are currently stubs.
+- **`change_login_state` is no longer a stub, and can now fail.** It used to
+  drain its params and report success without doing anything, so every caller
+  believed it had advanced the client. It now performs the transition, keyed on
+  `new_state` alone — `20` requires the login screen, `30` requires the lobby,
+  and `old_state` is accepted but ignored because the producer reads the live
+  state itself rather than trusting a value you sampled some ticks ago. Asking
+  for a transition the client is not positioned to make returns an error
+  (`not_on_login_screen`, `not_in_lobby`, `unsupported_new_state`) where it
+  previously returned success. `login_to_lobby` and `login_to_game` are the
+  explicit halves of the same pair. **`set_world` is still a stub**, as are the
+  three Capture methods, which answer `{error: "not_implemented"}`.
+- **`query_spot_anims` covers the world list only.** It walks the client's
+  world/static spot-anim list and answers `{spot_anims: [{id, tile_x, tile_y}]}`,
+  capped at 256 rows. Graphics playing *on* an NPC or player are not in that
+  list — read those from `spotAnimId` on the snapshot's entity rows, or from
+  event type 72 (§2.8).
 
 ### 4.5 Broker topics
 
