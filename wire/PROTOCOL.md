@@ -531,6 +531,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
+| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `highlight_component` |
 
 Four gaps worth knowing before you design around them:
 
@@ -562,6 +563,85 @@ Four gaps worth knowing before you design around them:
   capped at 256 rows. Graphics playing *on* an NPC or player are not in that
   list — read those from `spotAnimId` on the snapshot's entity rows, or from
   event type 72 (§2.8).
+
+#### Debug drawing
+
+The agent retains a set of draw commands and renders them over the client. The
+store is **not** in shared memory and nothing about it moves `kProtocolVersion`
+— it is entirely additive over this pipe.
+
+Three properties shape the API, and a consumer that assumes otherwise will get
+surprises:
+
+- **Commands are keyed, not handled.** Every command carries a caller-chosen
+  string key of 1–47 bytes, and setting the same key again replaces rather than
+  appends. There is no handle to leak and nothing to free; redrawing
+  `"target-box"` every tick is idempotent.
+- **Keys are scoped to the connection.** Two clients may both use
+  `"target-box"` without colliding, `debug_draw_clear` only ever removes your
+  own, and **when a connection closes the agent drops everything that
+  connection drew.** A client that dies mid-script leaves nothing on screen.
+- **TTL is mandatory.** Omitting `ttl_ms` gives you 3000 ms. `ttl_ms: 0` means
+  "until replaced, cleared, or my connection closes" — it is not a way to draw
+  something permanent from outside a live session.
+
+| Method | Params | Returns |
+|---|---|---|
+| `debug_draw_set` | `{key, kind, space?, …geometry…, color?, thickness?, filled?, closed?, z?, ttl_ms?, text?}` | `{key}` |
+| `debug_draw_set_batch` | `{items: [ …as above… ]}`, at most 256 | `{count, dropped, error}` |
+| `debug_draw_clear` | `{key}` and/or `{keys: […]}` | `{removed}` |
+| `debug_draw_clear_all` | `{scope: "mine" \| "all"}`, default `"mine"` | `{removed, scope}` |
+| `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
+| `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
+| `debug_draw_stats` | — | see below |
+| `highlight_component` | `{iface, comp, color?, thickness?, ttl_ms?, key?}` | `{key}` |
+
+`kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
+the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
+and `ellipse` take `x, y, w, h` (one command with a `filled` flag, not two
+commands); `text` takes `x, y` and a UTF-8 `text`; `poly` takes a flat
+`points: [x, y, x, y, …]` of 2–32 pairs; `component` takes `iface, comp` and no
+geometry at all.
+
+That last one is the point of the semantic kinds. **A component's on-screen
+rect is recomputed by the client on every layout pass**, so a highlight that
+stored a rectangle would drift the moment the UI relaid out, the window
+resized, or a scrollpane moved. The agent stores the `(iface, comp)` pair and
+re-resolves the rect on the game thread once per tick. `debug_draw_list`
+reports the last resolved rect as `rect` alongside a `resolved` flag; a
+renderer skips an unresolved command rather than drawing a stale one.
+
+**`space` is on the wire from the start and `"world"` is not implemented yet.**
+It is accepted, validated, and rejected with
+`world space requires projection - not yet implemented`, so the shape of this
+API will not change under you when projection lands. `"screen"` (client-area
+pixels, origin top-left) is the default and the only value that works today.
+**Coordinates are integers everywhere** — this wire has no float field and the
+producer's writer has no float32 encoder, both deliberately. World coordinates,
+when they arrive, will be fixed-point (`tile * 256 + subtile`), not floats.
+
+Colours are `0xAARRGGBB` packed into an unsigned integer.
+
+Every cap is a hard error rather than a silent truncation: exceeding the 512
+retained commands, the 64 text slots, the 64 polyline slots, or the 47-byte key
+gives you `{id, error}` and a counter in `debug_draw_stats.dropped`.
+`debug_draw_list` is **paged** — `limit` defaults to and is capped at 128 rows,
+which is what keeps the one response on this wire that could otherwise approach
+the 4 MiB frame limit from doing so. Use `offset` with the returned `total` to
+walk the rest.
+
+`debug_draw_stats` is deliberately over-instrumented, because the failure mode
+this feature has to avoid is an overlay that has silently died while looking
+perfectly healthy. Alongside `count`, `capacity`, the slot gauges, `dropped`,
+`resolve_failures` and `version`, it reports `backend` (which renderer is
+actually live), `backend_ready`, `frames`, `skipped_frames`, `last_present_us`
+and `surface: [w, h]`. Three of its fields are booleans specifically so an
+assertion can be written against them: **`has_presented`** (the renderer has
+drawn at least one frame), **`frames_match_backend`** (the pump's frame count
+agrees with the renderer's own, computed producer-side so a reader cannot race
+it), and **`resolver_live`** (the game thread has returned resolved geometry at
+least once — the positive trace that the per-tick refresh is running, since an
+unresolved rect is also what you would see if it never ran at all).
 
 ### 4.5 Broker topics
 
