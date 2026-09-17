@@ -1,10 +1,13 @@
 # CONTEXT.md — NXTDebugger
 
-Glossary specific to the debugger context. Cross-references the workspace
-root `CONTEXT-MAP.md` and the producer's `NXTLibrary/CONTEXT.md`. When this
-file's vocabulary diverges from the producer's, the producer's wire-side
-spelling wins inside `src/wire/` (those decoders match `SharedLayout.h`
-field names byte-for-byte); the debugger UI uses the names defined here.
+Glossary for the debugger and the wire surface it reads. Where a term names
+something on the wire, the agent's spelling wins inside `src/wire/` — those
+decoders match the `SharedLayout.h` field names in `wire/ipc/` byte-for-byte.
+The debugger's own UI uses the names defined here.
+
+`Phase N` below refers to internal development milestones. The numbering has
+no meaning for the wire protocol and nothing outside this document depends on
+it; `wire/PROTOCOL.md` is the normative description.
 
 ## Core terms
 
@@ -41,8 +44,8 @@ field names byte-for-byte); the debugger UI uses the names defined here.
   the running drop count and surfaces it as a red pill in the Event tail.
 - **Panel.** One ImGui window with a focused responsibility. Panels are
   POD entries in `App::panels` (name + open flag + function pointer);
-  there is no panel base class — runtime polymorphism is banned per the
-  workspace `cpp-rules`.
+  there is no panel base class — this codebase does not use runtime
+  polymorphism.
 - **Card.** A bordered child region with a left amber stripe + bold title.
   The reusable section primitive defined in `app/Theme.{h,cpp}`
   (`BeginCard` / `EndCard`). Every panel composes its content out of
