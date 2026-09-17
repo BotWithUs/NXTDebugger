@@ -7,9 +7,18 @@
     third-party consumer bind against. NXTLibrary is the source of truth for
     those files; this script copies them across byte-for-byte.
 
-    The copies must stay byte-identical: cmake.toml diffs them at configure
+    The copies must stay content-identical: cmake.toml diffs them at configure
     time whenever a sibling NXTLibrary checkout is present, and fails the build
     on drift. Run this after any producer-side wire change, then rebuild.
+
+    Copies are made byte-for-byte, but the comparison normalises CRLF to LF
+    first, on both sides. Otherwise the verdict depends on how each tree was
+    materialised rather than on its content: git stores these blobs with LF and
+    core.autocrlf=true smudges them to CRLF on checkout, whereas this script
+    copies the producer's bytes verbatim. A fresh clone therefore disagreed with
+    a synced one about files the producer keeps as LF, and reported drift on a
+    tree that was already correct. A line ending cannot change a decode.
+    cmake.toml normalises identically -- keep the two in step.
 
     A public clone has no sibling checkout. There, wire/ is simply the schema,
     the configure-time check is skipped, and this script is not needed.
@@ -61,6 +70,35 @@ $destRoot = Join-Path $repoRoot 'wire'
 $changed = @()
 $missing = @()
 
+# SHA256 of a file's content with CRLF newlines normalised to LF. Works on the
+# raw bytes so no text decoding can alter the result. Must stay equivalent to
+# the file(READ) + string(REPLACE) + string(SHA256) sequence in cmake.toml.
+function Get-NormalizedFileHash
+{
+    param([string] $Path)
+
+    $bytes      = [System.IO.File]::ReadAllBytes($Path)
+    $normalized = [System.Collections.Generic.List[byte]]::new($bytes.Length)
+    for ($i = 0; $i -lt $bytes.Length; $i++)
+    {
+        if ($bytes[$i] -eq 0x0D -and ($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 0x0A)
+        {
+            continue
+        }
+        $normalized.Add($bytes[$i])
+    }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try
+    {
+        return [System.BitConverter]::ToString($sha.ComputeHash($normalized.ToArray())).Replace('-', '')
+    }
+    finally
+    {
+        $sha.Dispose()
+    }
+}
+
 foreach ($relative in $wireFiles)
 {
     $source = Join-Path $sourceRoot ($relative -replace '/', '\')
@@ -72,11 +110,11 @@ foreach ($relative in $wireFiles)
         continue
     }
 
-    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $sourceHash = Get-NormalizedFileHash -Path $source
     $destHash   = $null
     if (Test-Path -LiteralPath $dest)
     {
-        $destHash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
+        $destHash = Get-NormalizedFileHash -Path $dest
     }
 
     if ($sourceHash -eq $destHash)

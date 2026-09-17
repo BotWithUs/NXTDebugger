@@ -22,7 +22,19 @@ description = "Standalone Win32 observer for the BotWithUs agent wire surface"
 # sync into a build error instead of a wrong decode at runtime. Publicly there
 # is no sibling, the check is skipped, and wire/ is simply the schema.
 #
-# Keep WIRE_FILES in sync with the $wireFiles list in tools/sync_wire.ps1.
+# Line endings are normalised out before hashing, on both sides. The check used
+# to hash the files on disk directly, which made its verdict depend on how the
+# tree was materialised rather than on its content: git stores these blobs with
+# LF and core.autocrlf=true smudges them to CRLF on checkout, while sync_wire.ps1
+# copies the producer's bytes verbatim. Those two disagree for any file the
+# producer happens to keep as LF, so a fresh clone or `git worktree add` beside a
+# producer checkout hit a FATAL_ERROR on a tree git itself called clean, and the
+# main checkout only passed because sync_wire.ps1 had written those bytes last.
+# CRLF cannot change a decode, so content equality is the check that was meant.
+#
+# Keep WIRE_FILES in sync with the $wireFiles list in tools/sync_wire.ps1, and
+# keep that script's comparison normalised the same way — if the two disagree,
+# one of them is telling somebody to fix a file that is already correct.
 cmake-before = """
 set(WIRE_FILES
     ipc/SharedLayout.h
@@ -38,8 +50,12 @@ if(EXISTS ${NXTLIB_SRC}/ipc/SharedLayout.h)
         if(NOT EXISTS ${NXTLIB_SRC}/${_rel})
             list(APPEND _wire_drift "${_rel} (missing in producer)")
         else()
-            file(SHA256 ${NXTLIB_SRC}/${_rel} _src_hash)
-            file(SHA256 ${CMAKE_CURRENT_SOURCE_DIR}/wire/${_rel} _dst_hash)
+            file(READ ${NXTLIB_SRC}/${_rel} _src_text)
+            file(READ ${CMAKE_CURRENT_SOURCE_DIR}/wire/${_rel} _dst_text)
+            string(REPLACE "\\r\\n" "\\n" _src_text "${_src_text}")
+            string(REPLACE "\\r\\n" "\\n" _dst_text "${_dst_text}")
+            string(SHA256 _src_hash "${_src_text}")
+            string(SHA256 _dst_hash "${_dst_text}")
             if(NOT _src_hash STREQUAL _dst_hash)
                 list(APPEND _wire_drift ${_rel})
             endif()
