@@ -531,7 +531,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
-| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `highlight_component` |
+| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component` |
 
 Four gaps worth knowing before you design around them:
 
@@ -594,6 +594,7 @@ surprises:
 | `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
+| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all}` |
 | `highlight_component` | `{iface, comp, color?, thickness?, ttl_ms?, key?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
@@ -621,6 +622,26 @@ producer's writer has no float32 encoder, both deliberately. World coordinates,
 when they arrive, will be fixed-point (`tile * 256 + subtile`), not floats.
 
 Colours are `0xAARRGGBB` packed into an unsigned integer.
+
+**Two coordinate spaces meet here, and only one of them is pixels.** Screen-space
+draw commands are in the render surface's own pixels. A **component rect is
+not** — the client lays its interfaces out in a smaller logical space and scales
+that to fill the viewport, so the agent scales a resolved component rect by
+`surface / layout` before drawing it. Measured on a 4K display at 225% scaling:
+the ratio is identical in x and y at every window size and settles at the display
+scale once the window is large enough to stop the layout clamping at its
+~1024x600 floor. Consumers never see this — `debug_draw_list` reports the rect in
+layout units, exactly as `get_component` does — but anyone comparing a reported
+rect against a screenshot needs to know the factor exists.
+
+**`debug_draw_probe_pixels` is a verification surface, not a drawing one.** It
+reads back what is actually on screen inside the overlay's target client rect and
+counts pixels matching `color`, so a test can assert that pixels *reached the
+screen* rather than that a counter moved. `source: 1` samples the overlay's own
+surface instead, which splits "did it draw" from "did it reach the screen" — the
+two halves have genuinely different causes, and separating them is what located
+both renderer bugs found during phase 1. Coordinates are client-space, so a
+mismatch also catches the overlay being aligned to the wrong window.
 
 Every cap is a hard error rather than a silent truncation: exceeding the 512
 retained commands, the 64 text slots, the 64 polyline slots, or the 47-byte key
