@@ -733,6 +733,21 @@ absent entirely for `source: 1`, which nothing can cover). It is there because
 `occluded: true` on its own is a dead end for whoever reads a run record, and
 finding out cost three harness runs and a screenshot the first time.
 
+**It is non-empty whenever `occluded` is true, without exception.** Four
+conditions occlude without a nameable window — the point is on no monitor
+(`(off-screen)`), no window is at it (`(no window at point)`), there is no
+tracked game window (`(no target window)`), or the class could not be read
+(`(unnamed window)`) — and each reports a bracketed reason rather than an empty
+string, so "occluded" and "named" are the same question. **Gate on the boolean
+anyway**: this field is the message, not the predicate.
+
+`(off-screen)` is the one worth knowing about. A client moved entirely off every
+display still satisfies `WindowFromPoint`, because an off-screen window keeps
+its place in the window manager's coordinate space — so before this was added
+the probe reported `occluded: false, matched: 0` over a frame the surface probe
+showed as correctly drawn, i.e. it accused the renderer of a window-placement
+problem. A client collapsed to its title bar does the same thing.
+
 **Expect it to fire often.** A Debug agent always has a console, in the client's
 own process, over the render view — and a Debug build is the only kind the
 harness injects. So in harness runs occlusion is the DEFAULT condition, not an
