@@ -97,3 +97,37 @@ it; `wire/PROTOCOL.md` is the normative description.
 - **Session panel.** Token / session health — `get_token_refresher` expiry
   countdown + status dot, a `trigger_token_refresh` button, and a timeline
   of the token-refresh ring events (fired / refreshed / failed = 3 / 4 / 5).
+
+## Overlay phase 4 vocabulary
+
+- **Debug Draw panel.** `panels/DebugDrawPanel.cpp` — the hand driver for the
+  agent's retained draw store. Polls `debug_draw_list` through the shared RPC
+  client and drives all nine `debug_draw_*` methods plus the four highlight
+  helpers by hand. The store is **not** in shared memory and nothing about it
+  moves `kProtocolVersion`; it is entirely additive over the pipe.
+- **Draw store.** The agent-side set of retained draw commands, keyed on
+  *(connection, caller's key)*. 512 commands, 64 text slots, 64 polyline
+  slots. Setting the same key again **replaces** rather than appends — a key
+  is an identity, not a handle, so there is nothing to free.
+- **Scope.** `debug_draw_list {scope: "all"}` lists every connection's
+  commands, not just the caller's; `"mine"` is the default. This is the whole
+  reason a debugger can watch what a script is drawing. `debug_draw_clear` and
+  `clear_all {scope: "mine"}` still only ever remove the caller's own.
+- **Direct** *(this panel's own term, not a wire value)*. A command whose
+  geometry needs no resolution: a screen-space `line`/`rect`/`ellipse`/`poly`/
+  `text`. The agent resolves only `component`, `entity`, `tile` and anything
+  in world space, so a direct command reports `resolved: false` and
+  `rect: [0,0,0,0]` for its whole life **and is drawing correctly**. The panel
+  renders it as `direct` rather than as a failure, because "unresolved" on a
+  working screen rect is the single most misleading thing this table could say.
+- **Project state.** The five-valued `project` field on a list row — **n/a**,
+  **ok**, **off_viewport**, **behind_camera**, **unavailable**. Not a bool, and
+  not collapsible into `resolved`: the reason a marker has no usable screen
+  position is the thing a debugger exists to show.
+- **Zero-area.** A row with `resolved: true` whose rect has a zero width *or*
+  height — legal, and observed live (a distant footprint resolving to
+  `[1882, -476, 1, 0]`, and `text`, whose resolved extent is zero by design).
+  The position is real; there is nothing to fill.
+- **TTL left.** The `ttl_ms` a list row carries is what REMAINS, not what was
+  sent, and it is **-1** for a command set with `ttl_ms: 0`. The panel renders
+  that as `none`.

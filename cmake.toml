@@ -115,6 +115,30 @@ if(NOT _doc_result EQUAL 0)
 endif()
 message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
 
+# Debug Draw panel cap drift check.
+#
+# The panel DISPLAYS the drawing API's limits, which means it copies them, and a
+# copied constant drifts silently while looking authoritative. Neither gate
+# above covers it: check_protocol_doc.ps1 compares method names only, and
+# ProtocolDocPins.h can only pin what lives in wire/ — and the draw store is
+# deliberately not in wire/ (not in SHM, does not move kProtocolVersion, and
+# overlay/DrawTypes.h carries game internals that must not be published).
+#
+# Same conditional shape as the two above: the script self-skips with a status
+# line when no producer checkout sits beside us, so a public clone still
+# configures.
+execute_process(
+    COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_draw_caps.ps1
+    RESULT_VARIABLE _caps_result
+    OUTPUT_VARIABLE _caps_output
+    ERROR_VARIABLE  _caps_output)
+if(NOT _caps_result EQUAL 0)
+    message(FATAL_ERROR
+        "The Debug Draw panel's caps have drifted from the producer:\\n${_caps_output}")
+endif()
+message(STATUS "NXTDebugger: Debug Draw panel caps match the producer")
+
 # FreeType: build the standalone static library — no zlib / png / harfbuzz /
 # brotli / bzip2 transitive deps. We only need it as ImGui's font rasterizer.
 # Cache vars must be set BEFORE the fetch-content add_subdirectory so they
