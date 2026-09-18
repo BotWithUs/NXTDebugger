@@ -531,7 +531,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
-| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component` |
+| Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component`, `highlight_entity`, `highlight_tile`, `highlight_area` |
 
 Four gaps worth knowing before you design around them:
 
@@ -596,8 +596,11 @@ surprises:
 | `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
-| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all, occluded, exact?, occluder?}` (exact: source 1; occluder: source 0) |
+| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` **or** `{key, color, source?, inset?}` | `{region, matched, total, all, occluded, exact?, occluder?}` (exact: source 1; occluder: source 0) |
 | `highlight_component` | `{iface, comp, space?, color?, thickness?, filled?, z?, ttl_ms?, key?, label?, font?, value?, decimals?}` | `{key}` |
+| `highlight_entity` | `{npc \| player \| self, w?, h?, plane?, …styling…, key?, label?}` | `{key}` |
+| `highlight_tile` | `{x, y, plane?, …styling…, key?, label?}` | `{key}` |
+| `highlight_area` | `{x, y, w, h, plane?, …styling…, key?, label?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
 the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
@@ -605,6 +608,14 @@ and `ellipse` take `x, y, w, h` (one command with a `filled` flag, not two
 commands); `text` takes `x, y` and a UTF-8 `text`; `poly` takes a flat
 `points: [x, y, x, y, …]` of 2–32 pairs; `component` takes `iface, comp` and no
 geometry at all.
+**Two further kinds exist and are deliberately not spellable as `kind`.**
+`entity` and `tile` appear in `debug_draw_list` output, but `debug_draw_set`
+rejects them with the ordinary `unknown kind` error. They carry semantics no
+geometry key can express - which list an index belongs to, which plane a
+footprint sits on - so they are reached only through `highlight_entity`,
+`highlight_tile` and `highlight_area`, where every parameter is named for what
+it means and a wrong one is reported by name. Spelling them here would accept
+`{kind: "entity", x: 3, y: 4}` and draw something nobody asked for.
 
 `highlight_component` generates a key when you omit one, formatted
 **`comp:<iface>:<comp>`** — for example `comp:1473:5`. Decimal, no padding. That
@@ -638,14 +649,97 @@ re-resolves the rect on the game thread once per tick. `debug_draw_list`
 reports the last resolved rect as `rect` alongside a `resolved` flag; a
 renderer skips an unresolved command rather than drawing a stale one.
 
-**`space` is on the wire from the start and `"world"` is not implemented yet.**
-It is accepted, validated, and rejected with
-`world space requires projection - not yet implemented`, so the shape of this
-API will not change under you when projection lands. `"screen"` (client-area
-pixels, origin top-left) is the default and the only value that works today.
-**Coordinates are integers everywhere** — this wire has no float field and the
-producer's writer has no float32 encoder, both deliberately. World coordinates,
-when they arrive, will be fixed-point (`tile * 256 + subtile`), not floats.
+### World space
+
+**`"world"` is implemented.** Through the first two phases of this feature it
+was accepted and then rejected with
+`world space requires projection - not yet implemented`; **that message is now
+unreachable**, and a consumer asserting on it will fail. No method name
+changed, so `tools/check_protocol_doc.ps1` stays green across this change - it
+compares method names only. This paragraph is the record.
+
+`"screen"` (client-area pixels, origin top-left) remains the default.
+
+**Coordinates are integers everywhere** - this wire has no float field and the
+producer's writer has no float32 encoder, both deliberately. World coordinates
+are fixed-point **`tile * 256 + subtile`**. Note that the client's own scene
+graph uses 512 units per tile, exactly twice this; the agent owns that
+conversion in one function and nothing on the wire ever sees the 512.
+
+**A world position is resolved to a screen position once per tick on the game
+thread** - the same retained/re-resolved contract `component` has, and for the
+same reason: the camera moves, so a command that stored a pixel would be wrong
+the moment the player turned. `debug_draw_list` reports the projected rect in
+`rect` alongside `resolved`, exactly as it does for a component.
+
+**In world space a POSITION is a world coordinate and an EXTENT is tiles.** A
+world `rect` or `ellipse` is a ground footprint, not a screen-sized billboard.
+`line` projects both endpoints. `text` projects its anchor. **`poly` is
+rejected** with `world space does not support poly` - its points live in a side
+slot with no room for a projected copy; send lines instead. `component` is
+rejected too: it is already on screen and has no world position.
+
+A projected footprint is reported as the **screen bounding box** of its four
+projected corners, not as the perspective quadrilateral, so it over-covers at
+oblique camera angles. It shrinks correctly with distance.
+
+**`plane` (0..3) is accepted only in world space**; on a screen-space command
+it is refused with `only world space takes a plane` rather than ignored. It is
+currently honoured **by refusal**: the agent's only ground-height source is the
+local player's own elevation, so a command naming a different plane resolves
+`unavailable` rather than being drawn convincingly wrong at the player's floor.
+For the same reason a world position on a slope or a staircase is drawn at the
+player's height - correct horizontally, off vertically. An `entity` highlight
+is exempt, because an entity carries its own height; entity highlights are
+exact everywhere, which makes them the recommended path.
+
+#### `project` - four outcomes, not a bool
+
+Every world command's `debug_draw_list` row carries a **`project`** field
+alongside `resolved`:
+
+| project | resolved | meaning |
+|---|---|---|
+| **n/a** | - | a screen-space command; nothing was projected |
+| **ok** | true | in front of the camera and inside the scene viewport |
+| **off_viewport** | true | in front of the camera, outside the viewport rect. The coordinates are **real and clampable** - negative values are normal - and are safe to draw an off-screen edge marker from |
+| **behind_camera** | false | no usable screen position exists: at or behind the camera plane, a NaN in the transform, or the near-clip blow-up |
+| **unavailable** | false | no scene, no window, or a plane the agent cannot height - pre-login, mid-teardown, another floor |
+
+<!-- The values above are deliberately bold rather than backticked. -->
+<!-- tools/check_protocol_doc.ps1 reads every backticked lowercase identifier -->
+<!-- out of any table row in section 4.4 and diffs it against the producer's -->
+<!-- g_methods[], so a backticked `ok` here is reported as an undocumented -->
+<!-- RPC method. Keep enum values in this section unbackticked inside tables. -->
+
+`resolved` is one bit and cannot tell the last three apart. **A consumer that
+treats `off_viewport` and `behind_camera` alike will draw a marker clamped to a
+screen edge for something behind the player's head**, which is the specific
+mistake this field exists to prevent.
+
+When the result is not usable the agent does **not** put a sentinel in `rect`.
+The coordinate check refuses `INT32_MIN` rather than clamping it, so `rect`
+reads `[0, 0, 0, 0]` and `resolved` is `false`.
+
+#### The named world highlights
+
+`highlight_tile` draws exactly one tile and **refuses `w`/`h`**
+(`use highlight_area`) rather than dropping them; `highlight_area` requires
+both, in **tiles**. `highlight_entity` takes exactly one of `npc`, `player` or
+`self` - two is an error and none is an error, because "which wins" is not a
+rule a caller can guess from a reply that succeeded. `self` carries no index:
+the local player's list slot is re-resolved every tick, so it survives a world
+hop that would leave a stored index pointing at whoever took the seat. `w`/`h`
+on an entity are its footprint in tiles, default 1x1.
+
+**The tile helpers speak TILES; raw `space: "world"` primitives speak
+sub-tiles.** `highlight_tile {x: 3200, y: 3200}` stores `819200`. The handler
+is the single place the two meet, so nothing downstream ever sees two units.
+
+Auto keys, when you omit `key`, are `tile:<x>:<y>` and `area:<x>:<y>` in tiles,
+and `npc:<index>:0` / `player:<index>:0` / `self:0:0`. Decimal, no padding.
+Same contract as `comp:<iface>:<comp>`: without it a caller who omitted `key`
+has no way to name the highlight again in order to clear it.
 
 Colours are `0xAARRGGBB` packed into an unsigned integer. **`color` must fit
 32 bits** — a signed 32-bit value is accepted too, so a Java caller may send
@@ -705,6 +799,25 @@ scale once the window is large enough to stop the layout clamping at its
 ~1024x600 floor. Consumers never see this — `debug_draw_list` reports the rect in
 layout units, exactly as `get_component` does — but anyone comparing a reported
 rect against a screenshot needs to know the factor exists.
+
+**A probe region can be addressed BY KEY instead of by coordinates.**
+`{key, color, source?, inset?}` probes wherever the named command's projection
+actually put it, using that command's last resolved rect shrunk by `inset` on
+all four sides (default 0). This exists because a world marker lands wherever
+the camera says and no test can know that in advance - the scenario runner
+matches exact values and cannot carry a number from one step into the next, so
+a literal `x/y` would be unwriteable. `key` and `x/y/w/h` together are refused
+rather than ranked. The key must name a **world** command this connection owns
+that is currently resolved; anything else returns
+`no resolved world command under that key`, which is an error naming the cause
+rather than a silent `0 of 0` that reads like a renderer fault. A Component's
+rect is deliberately not addressable this way: it is in interface layout space,
+not surface pixels, and the two are not distinguishable once returned.
+
+**Every reply carries `region`** - the `[x, y, w, h]` actually sampled.
+Redundant when you passed coordinates, and the whole point when you passed a
+key: without it a failed key probe says "0 of 400 matched" and nothing about
+where it looked.
 
 **`debug_draw_probe_pixels` is a verification surface, not a drawing one.** It
 reads back what is actually on screen inside the overlay's target client rect and
@@ -820,12 +933,53 @@ the counter**:
   **both** the envelope and `dropped`, and treat an envelope error as *unknown*
   store state rather than a clean one.
 
-Coordinates must be within ±1048576 and rect/ellipse extents at most 16384;
-`thickness` is 1–64 and defaults to 1; `w` and `h` must both be > 0. The
-coordinate limit is why a caller must not feed a projected point through
-blindly — a point behind the camera projects to `INT32_MIN`, which is rejected
-rather than clamped, so you learn the point is not on screen instead of getting
-a line to nowhere.
+**There are TWO coordinate bounds and they are not interchangeable.** A
+world-space command is checked against both, at different points in its life.
+
+**Screen bound: +/-1048576 (2^20).** It applies to every screen coordinate a
+caller sends, and to every screen coordinate the projection produces a tick
+later. Rect/ellipse extents are at most 16384; `thickness` is 1-64 and defaults
+to 1; `w` and `h` must both be > 0. This is the check that makes a projected
+point safe to hand back: **a point behind the camera projects to `INT32_MIN`,
+which is rejected rather than clamped**, so you learn the point is not on
+screen instead of getting a confident line to nowhere. 2^20 is already about
+250x any real screen dimension - its looseness is all the slack a projected
+coordinate gets before it is refused.
+
+**World bound: +/-8388608 (2^23), i.e. 32768 tiles.** It applies to world
+coordinates only. It is *derived*, not chosen, and the derivation is the thing
+to preserve if any of its inputs move:
+
+> A caller gets world coordinates out of this agent's own snapshot, and every
+> absolute world tile the snapshot publishes - `NpcEntry.tileX`,
+> `PlayerEntry`, `LocationEntry`, `GroundItemEntry`, `ProjectileEntry` - is an
+> **`i16`**. So the widest tile magnitude any consumer can be holding is
+> `|INT16_MIN|` = 32768, and a bound below that would refuse a coordinate this
+> same producer published one tick earlier. At 256 sub-tiles per tile that is
+> 2^23.
+
+Two cross-checks confirm the derived number rather than producing it. It
+**covers the map**: the instance chunk descriptor (section 2.10) packs a source
+chunk Y in 11 bits and a chunk is 8 tiles, so the largest world tile the client
+itself can name is 2048 x 8 = 16384 - half the bound, 2x headroom. And it
+**survives float32**: the projection takes floats, a wire coordinate is doubled
+into the client's 512-per-tile scene units on the way in, and 2^23 x 2 = 2^24
+is exactly the largest magnitude at which float32 still represents every
+integer. One power of two more and the far corner of the map would quantise,
+putting a marker up to a sub-tile off with nothing to indicate it. That is why
+the bound is not rounded up "to be safe".
+
+**Do not merge them.** Raising the screen bound to fit a world coordinate
+widens by 8x the exact check that catches a bad projection, and makes one
+symbol mean two quantities with two derivations. The agent keeps them as
+`kMaxDrawCoord` and `kMaxWorldCoord`.
+
+A world rect's far corner is checked as a world coordinate in its own right,
+so there is no separate world extent constant - the question "is this extent
+legal" is exactly "does this corner exist". The **resolved** screen rect is
+then subject to the screen extent cap, and a footprint that projects larger
+than that simply fails to resolve (`resolved: false`) rather than being drawn
+wrong.
 
 One cap is **not** an error, because it is not reachable from a single call:
 `kMaxResolveTargets` (64) bounds how many component highlights the agent
@@ -833,10 +987,13 @@ re-resolves per tick. Past it, the surplus is resolved on a following tick —
 collection rotates, so nothing is starved — and `debug_draw_stats.resolve_overflow`
 counts the ticks on which that happened. A non-zero value means some highlight
 geometry is lagging the game by a tick or more.
-Each `debug_draw_list` item carries `key`, `kind`, `space`, `color`,
-`thickness`, `z`, `filled`, `closed`, `geom`, `resolved`, `rect`, `ttl_ms`,
-`font` and `text`. `text` is populated for `text` commands and for a
-`component` highlight's label, and is empty for every other kind.
+Each `debug_draw_list` item carries `key`, `kind`, `space`, `plane`, `project`,
+`color`, `thickness`, `z`, `filled`, `closed`, `geom`, `resolved`, `rect`,
+`ttl_ms`, `font` and `text`. `text` is populated for `text` commands and for
+the label on a `component`, `entity` or `tile` highlight, and is empty for
+every other kind. `plane` is 0 for screen-space commands. `project` is `n/a`
+for screen-space commands and one of the four world outcomes otherwise - see
+"World space" above, and read it rather than collapsing it into `resolved`.
 
 `debug_draw_list` is **paged** — `limit` defaults to and is capped at 128 rows,
 which is what keeps the one response on this wire that could otherwise approach
