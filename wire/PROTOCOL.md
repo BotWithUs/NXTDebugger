@@ -700,17 +700,22 @@ alongside `resolved`:
 
 | project | resolved | meaning |
 |---|---|---|
-| **n/a** | - | a screen-space command; nothing was projected |
+| **n/a** | - | nothing was projected. Every screen-space command, **including `highlight_component`** - a component's rect is re-read from the live interface tree, not projected, so no camera is involved and no projection outcome describes it |
 | **ok** | true | in front of the camera and inside the scene viewport |
 | **off_viewport** | true | in front of the camera, outside the viewport rect. The coordinates are **real and clampable** - negative values are normal - and are safe to draw an off-screen edge marker from |
 | **behind_camera** | false | no usable screen position exists: at or behind the camera plane, a NaN in the transform, or the near-clip blow-up |
 | **unavailable** | false | no scene, no window, or a plane the agent cannot height - pre-login, mid-teardown, another floor |
 
-<!-- The values above are deliberately bold rather than backticked. -->
+<!-- The values above are deliberately bold rather than backticked, and so is -->
+<!-- the bare "self" in the auto-key table further down. -->
 <!-- tools/check_protocol_doc.ps1 reads every backticked lowercase identifier -->
 <!-- out of any table row in section 4.4 and diffs it against the producer's -->
-<!-- g_methods[], so a backticked `ok` here is reported as an undocumented -->
-<!-- RPC method. Keep enum values in this section unbackticked inside tables. -->
+<!-- g_methods[], so a backticked `ok` or `self` here is reported as an -->
+<!-- undocumented RPC method and fails the build gate. -->
+<!-- RULE: inside a section 4.4 table, a backticked bare lowercase word must -->
+<!-- be an actual RPC method name. Anything else - an enum value, a keyword, -->
+<!-- a parameter spelling - goes in bold. Words containing ':' or '<' are -->
+<!-- safe either way, which is why `npc:<index>` needs no special handling. -->
 
 `resolved` is one bit and cannot tell the last three apart. **A consumer that
 treats `off_viewport` and `behind_camera` alike will draw a marker clamped to a
@@ -718,8 +723,20 @@ screen edge for something behind the player's head**, which is the specific
 mistake this field exists to prevent.
 
 When the result is not usable the agent does **not** put a sentinel in `rect`.
-The coordinate check refuses `INT32_MIN` rather than clamping it, so `rect`
-reads `[0, 0, 0, 0]` and `resolved` is `false`.
+The coordinate check refuses `INT32_MIN` rather than clamping it, and a command
+that drops out of `resolved` has its rect **zeroed**, so `rect` reads
+`[0, 0, 0, 0]` whenever `resolved` is `false` - including for a marker that was
+tracking correctly and then went behind the camera. That case is worth naming:
+clearing only the flag would leave the last good rect in place, and a consumer
+reading it would get a stale, plausible, wrong rectangle at the exact moment
+its marker became invalid.
+
+**`resolved: true` does not promise a paintable area.** A zero-extent rect is a
+legitimate answer - a footprint far enough away that all four projected corners
+round to one pixel, and `text`, whose resolved extent is zero by design - so a
+world command can report `resolved: true` with `rect: [x, y, 0, 0]`. The
+position is real; there is simply nothing to fill. A consumer that needs an
+area to draw into must check the extent, not only the flag.
 
 #### The named world highlights
 
@@ -736,10 +753,32 @@ on an entity are its footprint in tiles, default 1x1.
 sub-tiles.** `highlight_tile {x: 3200, y: 3200}` stores `819200`. The handler
 is the single place the two meet, so nothing downstream ever sees two units.
 
-Auto keys, when you omit `key`, are `tile:<x>:<y>` and `area:<x>:<y>` in tiles,
-and `npc:<index>:0` / `player:<index>:0` / `self:0:0`. Decimal, no padding.
-Same contract as `comp:<iface>:<comp>`: without it a caller who omitted `key`
+#### Auto keys
+
+When you omit `key`, one is generated. Decimal, no padding. Same contract as
+`comp:<iface>:<comp>`: without a documented format, a caller who omitted `key`
 has no way to name the highlight again in order to clear it.
+
+| call | auto key |
+|---|---|
+| `highlight_tile` | `tile:<x>:<y>:<plane>` |
+| `highlight_area` | `area:<x>:<y>:<w>:<h>:<plane>` |
+| `highlight_entity` npc | `npc:<index>` |
+| `highlight_entity` player | `player:<index>` |
+| `highlight_entity` self | **self** (no index; see below) |
+
+**The key names every field that distinguishes two highlights, and that is not
+cosmetic.** A key is an identity and a set under an existing key *replaces* it,
+so any distinguishing field the key omits is a field two highlights can
+disagree on while colliding - and the loser disappears with no error, because
+replacing is a legitimate operation. Plane is therefore in the tile key (the
+same x/y on two floors is two tiles) and the extent is in the area key (two
+areas sharing a corner at different sizes are two regions).
+
+An entity key names the entity and nothing else, deliberately: two highlights
+on one npc with different footprints *are* the same highlight restyled, and
+replacing is the right answer. `self` carries no index because it does not have
+one - the local player's slot is re-resolved every tick.
 
 Colours are `0xAARRGGBB` packed into an unsigned integer. **`color` must fit
 32 bits** — a signed 32-bit value is accepted too, so a Java caller may send
