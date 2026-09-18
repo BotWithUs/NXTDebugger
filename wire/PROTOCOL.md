@@ -741,12 +741,24 @@ tracked game window (`(no target window)`), or the class could not be read
 string, so "occluded" and "named" are the same question. **Gate on the boolean
 anyway**: this field is the message, not the predicate.
 
-`(off-screen)` is the one worth knowing about. A client moved entirely off every
-display still satisfies `WindowFromPoint`, because an off-screen window keeps
-its place in the window manager's coordinate space — so before this was added
-the probe reported `occluded: false, matched: 0` over a frame the surface probe
-showed as correctly drawn, i.e. it accused the renderer of a window-placement
-problem. A client collapsed to its title bar does the same thing.
+`(off-screen)` is the one worth knowing about, and it is a REGION test, not a
+point test — all four corners of the sampled region must be on a display.
+
+A client moved entirely off every display still satisfies `WindowFromPoint`,
+because an off-screen window keeps its place in the window manager's coordinate
+space, so the window test alone reported `occluded: false, matched: 0` over a
+frame the surface probe showed as correctly drawn — accusing the renderer of a
+window-placement problem. A client collapsed to its title bar does the same.
+
+The PARTIAL case is the one to design around, because it is the one that gets
+believed. With the client dragged partly past a monitor edge — no change to any
+probe coordinate, just an ordinary window drag — a region can have its centre on
+a display and its edge off it. Measured at x = -200: `matched: 3200` of
+`total: 5000`, which is exactly the fraction still on the desktop, and under a
+point test it came back `occluded: false`. A zero count over a clear view looks
+suspicious and gets investigated; a 64% count over a clear view looks like
+partial coverage or a clipping bug and gets believed. **Do not treat a partial
+`matched` as evidence about the renderer without checking `occluded` first.**
 
 **Expect it to fire often.** A Debug agent always has a console, in the client's
 own process, over the render view — and a Debug build is the only kind the
