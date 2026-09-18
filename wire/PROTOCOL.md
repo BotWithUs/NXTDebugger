@@ -668,9 +668,12 @@ the counter**:
   returns before touching the store, so nothing is applied. But when an item is
   **structurally malformed**, the items *before* it have already been applied one
   by one; reading stops there and the call errors, leaving the store **partially
-  written** with no indication of how far it got. Recover with `debug_draw_list`
-  rather than assuming. The third outcome is per-item *validation* failure, which
-  is not an envelope error at all: those answer a normal `{id, result}` with
+  written** with no indication of how far it got — and the handler errors before
+  it writes its reply map, so the tally it had accumulated dies with the call: an
+  aborted batch carries no `count` at all, and that number is not recoverable
+  from the reply. Re-read the store with `debug_draw_list` rather than assuming.
+  The third outcome is per-item *validation* failure, which is not an envelope
+  error at all: those answer a normal `{id, result}` with
   `{count, dropped, error}` — the number applied, the number refused, and the
   **first** error string only (`nil` when none). A batch refused item-by-item
   still looks like a successful call, so a client that checks only for
