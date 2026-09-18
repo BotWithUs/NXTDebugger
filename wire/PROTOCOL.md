@@ -597,7 +597,7 @@ surprises:
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
 | `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all, occluded, exact?, occluder?}` (exact: source 1; occluder: source 0) |
-| `highlight_component` | `{iface, comp, color?, thickness?, filled?, ttl_ms?, key?, label?, font?}` | `{key}` |
+| `highlight_component` | `{iface, comp, space?, color?, thickness?, filled?, z?, ttl_ms?, key?, label?, font?, value?, decimals?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
 the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
@@ -611,6 +611,14 @@ geometry at all.
 format is part of the contract: without it a caller who omitted `key` has no way
 to name the highlight again in order to clear it. The reply always echoes the key
 actually used, so reading it back is the reliable route.
+
+**`highlight_component` takes `z`, and on this wire version that matters.** The
+styling parameters are resolved for every kind, so a highlight honours `z`,
+`space`, `color`, `thickness`, `filled` and `ttl_ms` exactly as a `rect` does —
+and since `z` now decides paint order, it is the only way to control which of
+several overlapping highlights is visible where they cross. That is precisely
+the "six highlights on screen" case labels exist to serve, so do not read the
+absence of a rectangle in the params as an absence of styling.
 
 It also takes an optional **`label`** (and a `font` for it), drawn against the
 rect the agent resolved — above the box, or just inside the top edge when that
@@ -670,14 +678,22 @@ distance or a percentage, send a scaled integer and say what you scaled it by:
     {kind: "text", x: 40, y: 160, value: -4200}               ->  "-4200"
 
 `decimals` defaults to 0 and must be 0..9. The integer part is zero-padded, so
-nothing ever renders as a bare `.05`. `decimals` without `value` is an error,
+nothing ever renders as a bare `.05`. **`value` is a label source for
+`highlight_component` too** — the same three spellings feed the same buffer, so
+`{iface, comp, value: 1234, decimals: 2}` captions a highlight `12.34` without a
+`label`. `decimals` without `value` is an error,
 and so is combining `value` with `text` or `label` — these are three spellings
 of one payload and exactly one is legal per command, because "which one wins"
 is not a rule a caller can guess from a reply that succeeded.
 
 A caption on a kind that draws none (`rect`, `ellipse`, `line`, `poly`) is
 rejected with `only text and component commands take text, label or value`
-rather than stored where nothing will read it.
+rather than stored where nothing will read it. **`font` is rejected on those
+same kinds**, with `only text and component commands take a font`. Through the
+first cut of this feature it was not: a `font` on a `rect` was accepted, stored
+and then ignored, while a `label` on the same `rect` was refused — two spellings
+of one mistake getting opposite answers. If you build commands from a shared
+style object, strip `font` for the shapes.
 
 **Two coordinate spaces meet here, and only one of them is pixels.** Screen-space
 draw commands are in the render surface's own pixels. A **component rect is
@@ -733,13 +749,19 @@ absent entirely for `source: 1`, which nothing can cover). It is there because
 `occluded: true` on its own is a dead end for whoever reads a run record, and
 finding out cost three harness runs and a screenshot the first time.
 
-**It is non-empty whenever `occluded` is true, without exception.** Four
-conditions occlude without a nameable window — the point is on no monitor
-(`(off-screen)`), no window is at it (`(no window at point)`), there is no
-tracked game window (`(no target window)`), or the class could not be read
-(`(unnamed window)`) — and each reports a bracketed reason rather than an empty
-string, so "occluded" and "named" are the same question. **Gate on the boolean
-anyway**: this field is the message, not the predicate.
+**It is non-empty whenever `occluded` is true, without exception.** Five
+conditions occlude without a nameable window — the region lies entirely off the
+overlay surface (`(region off surface)`), part of it is on no monitor
+(`(off-screen)`), no window is at the sampled point (`(no window at point)`),
+there is no tracked game window (`(no target window)`), or the class could not
+be read (`(unnamed window)`) — and each reports a bracketed reason rather than
+an empty string, so "occluded" and "named" are the same question. **Gate on the
+boolean anyway**: this field is the message, not the predicate.
+
+`(region off surface)` is what a caller gets for coordinates that miss the
+overlay entirely — a clipped region of zero pixels. It used to answer
+`{matched: 0, total: 0, occluded: false}`: a clear view of nothing, which reads
+as a renderer that drew nothing. Fix the coordinates, not the renderer.
 
 `(off-screen)` is the one worth knowing about, and it is a REGION test, not a
 point test — all four corners of the sampled region must be on a display.
