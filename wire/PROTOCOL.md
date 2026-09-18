@@ -589,15 +589,15 @@ surprises:
 
 | Method | Params | Returns |
 |---|---|---|
-| `debug_draw_set` | `{key, kind, space?, …geometry…, color?, thickness?, filled?, closed?, z?, ttl_ms?, text?}` | `{key}` |
+| `debug_draw_set` | `{key, kind, space?, …geometry…, color?, thickness?, filled?, closed?, z?, ttl_ms?, text?, label?, value?, decimals?, font?}` | `{key}` |
 | `debug_draw_set_batch` | `{items: [ …as above… ]}`, at most 256 | `{count, dropped, error}` |
 | `debug_draw_clear` | `{key}` and/or `{keys: […]}` | `{removed}` |
 | `debug_draw_clear_all` | `{scope: "mine" \| "all"}`, default `"mine"` | `{removed, scope}` |
 | `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
-| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all}` |
-| `highlight_component` | `{iface, comp, color?, thickness?, filled?, ttl_ms?, key?}` | `{key}` |
+| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all, occluded, exact?, occluder?}` (exact: source 1; occluder: source 0) |
+| `highlight_component` | `{iface, comp, space?, color?, thickness?, filled?, z?, ttl_ms?, key?, label?, font?, value?, decimals?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
 the geometry keys it reads depend on it: `line` takes `x1, y1, x2, y2`; `rect`
@@ -607,10 +607,28 @@ commands); `text` takes `x, y` and a UTF-8 `text`; `poly` takes a flat
 geometry at all.
 
 `highlight_component` generates a key when you omit one, formatted
-**`comp:<iface>:<comp>`** — for example `comp:1473:5`. That format is part of
-the contract: without it a caller who omitted `key` has no way to name the
-highlight again in order to clear it. The reply always echoes the key actually
-used, so reading it back is the reliable route.
+**`comp:<iface>:<comp>`** — for example `comp:1473:5`. Decimal, no padding. That
+format is part of the contract: without it a caller who omitted `key` has no way
+to name the highlight again in order to clear it. The reply always echoes the key
+actually used, so reading it back is the reliable route.
+
+**`highlight_component` takes `z`, and on this wire version that matters.** The
+styling parameters are resolved for every kind, so a highlight honours `z`,
+`space`, `color`, `thickness`, `filled` and `ttl_ms` exactly as a `rect` does —
+and since `z` now decides paint order, it is the only way to control which of
+several overlapping highlights is visible where they cross. That is precisely
+the "six highlights on screen" case labels exist to serve, so do not read the
+absence of a rectangle in the params as an absence of styling.
+
+It also takes an optional **`label`** (and a `font` for it), drawn against the
+rect the agent resolved — above the box, or just inside the top edge when that
+would leave the surface. The caption has to travel with the highlight precisely
+because the caller never learns where the rect landed: with six highlights on
+screen there is no other way to tell them apart. Note the parameter is `label`,
+not `text`; sending `text` to a `component` is rejected with
+`component names its caption "label", not "text"` rather than silently ignored.
+`debug_draw_list` reports a component's label in the same `text` field a `text`
+command uses.
 
 That last one is the point of the semantic kinds. **A component's on-screen
 rect is recomputed by the client on every layout pass**, so a highlight that
@@ -629,7 +647,53 @@ pixels, origin top-left) is the default and the only value that works today.
 producer's writer has no float32 encoder, both deliberately. World coordinates,
 when they arrive, will be fixed-point (`tile * 256 + subtile`), not floats.
 
-Colours are `0xAARRGGBB` packed into an unsigned integer.
+Colours are `0xAARRGGBB` packed into an unsigned integer. **`color` must fit
+32 bits** — a signed 32-bit value is accepted too, so a Java caller may send
+`0xFF00FF00` as the int `-16711936` — and anything outside that range is
+rejected with `color must fit 32 bits as 0xAARRGGBB` rather than masked.
+
+**`z` decides paint order, and it is honoured.** Higher `z` paints later, so it
+paints on top; the default is 0. Commands sharing a `z` keep a stable order that does
+not change between two presents of an unchanged store — but it is
+*not* a documented order, so do not rely on which of two equal-`z` commands wins.
+`z` is a **signed 16-bit** value: outside −32768..32767 the call is rejected with
+`z must be -32768..32767`. It is not clamped and not narrowed. (Through phase 1
+it *was* narrowed — `z: 100000` became `-31072` and silently reordered the
+paint.)
+
+### Text: `font`, and `value` for numbers
+
+`text` commands — and a `component` highlight's `label` — take an optional
+**`font`**, which names a style rather than a size: `"normal"` (the default),
+`"small"`, `"large"`, `"heading"`. An unknown name is rejected with
+`unknown font (want normal, small, large or heading)`. The producer owns the
+size table deliberately, so the set of GDI font objects the agent holds is a
+compile-time constant rather than something a script can grow.
+
+**There is no float anywhere on this wire, and that includes text.** To label a
+distance or a percentage, send a scaled integer and say what you scaled it by:
+
+    {kind: "text", x: 40, y: 160, value: 1234, decimals: 2}   ->  "12.34"
+    {kind: "text", x: 40, y: 160, value: -5,   decimals: 2}   ->  "-0.05"
+    {kind: "text", x: 40, y: 160, value: -4200}               ->  "-4200"
+
+`decimals` defaults to 0 and must be 0..9. The integer part is zero-padded, so
+nothing ever renders as a bare `.05`. **`value` is a label source for
+`highlight_component` too** — the same three spellings feed the same buffer, so
+`{iface, comp, value: 1234, decimals: 2}` captions a highlight `12.34` without a
+`label`. `decimals` without `value` is an error,
+and so is combining `value` with `text` or `label` — these are three spellings
+of one payload and exactly one is legal per command, because "which one wins"
+is not a rule a caller can guess from a reply that succeeded.
+
+A caption on a kind that draws none (`rect`, `ellipse`, `line`, `poly`) is
+rejected with `only text and component commands take text, label or value`
+rather than stored where nothing will read it. **`font` is rejected on those
+same kinds**, with `only text and component commands take a font`. Through the
+first cut of this feature it was not: a `font` on a `rect` was accepted, stored
+and then ignored, while a `label` on the same `rect` was refused — two spellings
+of one mistake getting opposite answers. If you build commands from a shared
+style object, strip `font` for the shapes.
 
 **Two coordinate spaces meet here, and only one of them is pixels.** Screen-space
 draw commands are in the render surface's own pixels. A **component rect is
@@ -650,6 +714,81 @@ surface instead, which splits "did it draw" from "did it reach the screen" — t
 two halves have genuinely different causes, and separating them is what located
 both renderer bugs found during phase 1. Coordinates are client-space, so a
 mismatch also catches the overlay being aligned to the wrong window.
+
+**The two sources answer the same question.** `matched` is an RGB comparison
+against the premultiplied colour and `total` counts the region clipped to the
+overlay surface, identically on both sides, so a surface count and a screen
+count of one drawing are two measurements of one quantity and may be compared.
+They were not comparable before phase 2: the surface compared all 32 bits while
+the screen compared 24 with alpha masked, and `total` was clipped on one side
+only, so the difference between them read as a rendering defect when it was a
+difference between two questions.
+
+The alpha half is reported separately rather than dropped. **`source: 1` also
+returns `exact`**, a full 32-bit match including alpha — the check that catches
+correct RGB written at alpha 0, which is what every GDI primitive does on a
+per-pixel-alpha layered surface. A desktop capture carries no usable alpha, so
+the screen source **omits `exact` entirely** rather than reporting `matched`
+under that name: a number that looks measured and is not is worse than a
+missing one.
+
+**`occluded` is the field that decides whether a screen result means anything,
+and `occluder` says what is responsible.**
+A screen capture reads whatever is frontmost, so any window over the client
+makes a working overlay report zero matching pixels. `occluded: true` means
+**unknown**, never "did not draw" — assert `occluded: false` alongside every
+screen expectation. The check asks whether the *game window* is on top, not
+whether *some window of the client's process* is: through phase 1 it compared
+process ids, and that is blind to the likeliest occluder of all, because a Debug
+build's agent console lives in the client's own process. A console over the
+capture region passed the old test, so the probe answered "not occluded, zero
+pixels" — the worst available answer, because it points at the renderer.
+
+**`occluder` carries the covering window's class name** (empty when clear,
+absent entirely for `source: 1`, which nothing can cover). It is there because
+`occluded: true` on its own is a dead end for whoever reads a run record, and
+finding out cost three harness runs and a screenshot the first time.
+
+**It is non-empty whenever `occluded` is true, without exception.** Five
+conditions occlude without a nameable window — the region lies entirely off the
+overlay surface (`(region off surface)`), part of it is on no monitor
+(`(off-screen)`), no window is at the sampled point (`(no window at point)`),
+there is no tracked game window (`(no target window)`), or the class could not
+be read (`(unnamed window)`) — and each reports a bracketed reason rather than
+an empty string, so "occluded" and "named" are the same question. **Gate on the
+boolean anyway**: this field is the message, not the predicate.
+
+`(region off surface)` is what a caller gets for coordinates that miss the
+overlay entirely — a clipped region of zero pixels. It used to answer
+`{matched: 0, total: 0, occluded: false}`: a clear view of nothing, which reads
+as a renderer that drew nothing. Fix the coordinates, not the renderer.
+
+`(off-screen)` is the one worth knowing about, and it is a REGION test, not a
+point test — all four corners of the sampled region must be on a display.
+
+A client moved entirely off every display still satisfies `WindowFromPoint`,
+because an off-screen window keeps its place in the window manager's coordinate
+space, so the window test alone reported `occluded: false, matched: 0` over a
+frame the surface probe showed as correctly drawn — accusing the renderer of a
+window-placement problem. A client collapsed to its title bar does the same.
+
+The PARTIAL case is the one to design around, because it is the one that gets
+believed. With the client dragged partly past a monitor edge — no change to any
+probe coordinate, just an ordinary window drag — a region can have its centre on
+a display and its edge off it. Measured at x = -200: `matched: 3200` of
+`total: 5000`, which is exactly the fraction still on the desktop, and under a
+point test it came back `occluded: false`. A zero count over a clear view looks
+suspicious and gets investigated; a 64% count over a clear view looks like
+partial coverage or a clipping bug and gets believed. **Do not treat a partial
+`matched` as evidence about the renderer without checking `occluded` first.**
+
+**Expect it to fire often.** A Debug agent always has a console, in the client's
+own process, over the render view — and a Debug build is the only kind the
+harness injects. So in harness runs occlusion is the DEFAULT condition, not an
+occasional desktop accident. Structure a scenario accordingly: assert the thing
+it is actually about against `source: 1`, which cannot be occluded, and put the
+screen assertion after it, so a desktop condition fails at a step that is
+unmistakably the screen check rather than masking the real claim.
 
 Every cap a call can hit is a hard error rather than a silent truncation, but
 **how you are told depends on which call you made, and only some of them touch
@@ -694,6 +833,11 @@ re-resolves per tick. Past it, the surplus is resolved on a following tick —
 collection rotates, so nothing is starved — and `debug_draw_stats.resolve_overflow`
 counts the ticks on which that happened. A non-zero value means some highlight
 geometry is lagging the game by a tick or more.
+Each `debug_draw_list` item carries `key`, `kind`, `space`, `color`,
+`thickness`, `z`, `filled`, `closed`, `geom`, `resolved`, `rect`, `ttl_ms`,
+`font` and `text`. `text` is populated for `text` commands and for a
+`component` highlight's label, and is empty for every other kind.
+
 `debug_draw_list` is **paged** — `limit` defaults to and is capped at 128 rows,
 which is what keeps the one response on this wire that could otherwise approach
 the 4 MiB frame limit from doing so. Use `offset` with the returned `total` to
