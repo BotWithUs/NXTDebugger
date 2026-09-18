@@ -661,12 +661,25 @@ the counter**:
   out-of-range coordinate and a malformed command are rejected before the store
   is touched at all, so they error **without** incrementing `dropped` — do not
   use that counter to detect them.
-- `debug_draw_set_batch` does **not** fail. It answers a normal `{id, result}`
-  with `{count, dropped, error}`: the number applied, the number refused, and
-  the **first** error string only (`nil` when none). A batch that is entirely
-  refused still looks like a successful call at the envelope level, so a client
-  that checks only for `{id, error}` will read a 256-item batch that drew
-  nothing as a success. Check `dropped`.
+- `debug_draw_set_batch` has three outcomes, and the dangerous one is that an
+  error reply does **not** mean nothing drew. It answers `{id, error}` — a real
+  envelope-level failure — in two cases. When the `items` array holds **more than
+  256** entries (`debug_draw_set_batch accepts at most 256 items`) the handler
+  returns before touching the store, so nothing is applied. But when an item is
+  **structurally malformed**, the items *before* it have already been applied one
+  by one; reading stops there and the call errors, leaving the store **partially
+  written** with no indication of how far it got — and the handler errors before
+  it writes its reply map, so the tally it had accumulated dies with the call: an
+  aborted batch carries no `count` at all, and that number is not recoverable
+  from the reply. Re-read the store with `debug_draw_list` rather than assuming.
+  The third outcome is per-item *validation* failure, which is not an envelope
+  error at all: those answer a normal `{id, result}` with
+  `{count, dropped, error}` — the number applied, the number refused, and the
+  **first** error string only (`nil` when none). A batch refused item-by-item
+  still looks like a successful call, so a client that checks only for
+  `{id, error}` will read a 256-item batch that drew nothing as a success. Check
+  **both** the envelope and `dropped`, and treat an envelope error as *unknown*
+  store state rather than a clean one.
 
 Coordinates must be within ±1048576 and rect/ellipse extents at most 16384;
 `thickness` is 1–64 and defaults to 1; `w` and `h` must both be > 0. The
