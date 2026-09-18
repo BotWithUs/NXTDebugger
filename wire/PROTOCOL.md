@@ -596,7 +596,7 @@ surprises:
 | `debug_draw_list` | `{scope?, offset?, limit?}` | `{total, offset, returned, items: […]}` |
 | `debug_draw_enable` | `{enabled}`, omit to read | `{enabled}` |
 | `debug_draw_stats` | — | see below |
-| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all, occluded, exact?}` (exact: source 1 only) |
+| `debug_draw_probe_pixels` | `{x, y, w, h, color, source?}` | `{matched, total, all, occluded, exact?, occluder?}` (exact: source 1; occluder: source 0) |
 | `highlight_component` | `{iface, comp, color?, thickness?, filled?, ttl_ms?, key?, label?, font?}` | `{key}` |
 
 `kind` is one of `line`, `rect`, `ellipse`, `poly`, `text`, `component`, and
@@ -716,7 +716,8 @@ the screen source **omits `exact` entirely** rather than reporting `matched`
 under that name: a number that looks measured and is not is worse than a
 missing one.
 
-**`occluded` is the field that decides whether a screen result means anything.**
+**`occluded` is the field that decides whether a screen result means anything,
+and `occluder` says what is responsible.**
 A screen capture reads whatever is frontmost, so any window over the client
 makes a working overlay report zero matching pixels. `occluded: true` means
 **unknown**, never "did not draw" — assert `occluded: false` alongside every
@@ -726,6 +727,19 @@ process ids, and that is blind to the likeliest occluder of all, because a Debug
 build's agent console lives in the client's own process. A console over the
 capture region passed the old test, so the probe answered "not occluded, zero
 pixels" — the worst available answer, because it points at the renderer.
+
+**`occluder` carries the covering window's class name** (empty when clear,
+absent entirely for `source: 1`, which nothing can cover). It is there because
+`occluded: true` on its own is a dead end for whoever reads a run record, and
+finding out cost three harness runs and a screenshot the first time.
+
+**Expect it to fire often.** A Debug agent always has a console, in the client's
+own process, over the render view — and a Debug build is the only kind the
+harness injects. So in harness runs occlusion is the DEFAULT condition, not an
+occasional desktop accident. Structure a scenario accordingly: assert the thing
+it is actually about against `source: 1`, which cannot be occluded, and put the
+screen assertion after it, so a desktop condition fails at a step that is
+unmistakably the screen check rather than masking the real claim.
 
 Every cap a call can hit is a hard error rather than a silent truncation, but
 **how you are told depends on which call you made, and only some of them touch
