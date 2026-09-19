@@ -72,6 +72,11 @@ constexpr uint32_t kMaxBatchItems   = 256;
 constexpr uint32_t kMaxKeyBytes     = 47;      // kMaxKeyChars 48, incl. NUL
 constexpr uint32_t kMaxTextUnits    = 127;     // kTextSlotChars 128, incl. NUL
 constexpr uint32_t kListPageMax     = 128;
+constexpr uint32_t kMaxPolyPairs    = 32;   // kPolySlotPoints
+// Deliberately WIDER than the wire cap: the send buffer has to be able to hold
+// an over-long polyline so the agent can refuse it by name, instead of this
+// panel quietly sending a valid shorter one.
+constexpr uint32_t kPolySendInts    = kMaxPolyPairs * 2 * 2;
 constexpr int32_t  kMaxScreenCoord  = 1 << 20;
 constexpr int32_t  kMaxScreenExtent = 1 << 14;
 constexpr int32_t  kMaxWorldCoord   = 1 << 23;
@@ -338,6 +343,51 @@ bool ReadDrawRow(Reader &r, DrawRow &out)
 // 26 of them, four more than PROTOCOL.md enumerates.
 // ---------------------------------------------------------------------------
 
+std::string ValueToText(Reader &r);
+
+std::string ArrayToText(Reader &r)
+{
+    uint32_t n = 0;
+    r.ReadArrayHeader(n);
+    std::string out = "[";
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        if (i != 0)
+        {
+            out.append(", ");
+        }
+        out.append(ValueToText(r));
+    }
+    out.push_back(']');
+    return out;
+}
+
+std::string MapToText(Reader &r)
+{
+    uint32_t n = 0;
+    r.ReadMapHeader(n);
+    std::string out = "{";
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        if (i != 0)
+        {
+            out.append(", ");
+        }
+        const char *k  = nullptr;
+        uint32_t    kn = 0;
+        if (!r.ReadString(k, kn))
+        {
+            out.append("<bad key>}");
+            return out;
+        }
+        out.append(k, kn);
+        out.append(": ");
+        out.append(ValueToText(r));
+    }
+    out.push_back('}');
+    return out;
+}
+
 std::string ValueToText(Reader &r)
 {
     char buf[64];
@@ -365,22 +415,22 @@ std::string ValueToText(Reader &r)
         ReadStrInto(r, s);
         return s;
     }
-    case Type::Array:
+    case Type::Float:
     {
-        uint32_t n = 0;
-        r.ReadArrayHeader(n);
-        std::string out = "[";
-        for (uint32_t i = 0; i < n; ++i)
-        {
-            if (i != 0)
-            {
-                out.append(", ");
-            }
-            out.append(ValueToText(r));
-        }
-        out.push_back(']');
-        return out;
+        double v = 0.0;
+        r.ReadDouble(v);
+        std::snprintf(buf, sizeof(buf), "%g", v);
+        return buf;
     }
+    case Type::Array:
+        return ArrayToText(r);
+    // EVERY successful reply on this surface is a map — {key},
+    // {count, dropped, error}, {removed}, {removed, scope}, {enabled}, and the
+    // whole of the probe's result. Falling into `default` here rendered all of
+    // them as "?" while error replies, which are plain strings, read fine: the
+    // panel looked healthy in exactly the case where it was not.
+    case Type::Map:
+        return MapToText(r);
     default:
         r.SkipValue();
         return "?";
@@ -474,11 +524,20 @@ struct DrawState
     float       refreshHz      = 5.0f;
     float       refreshAccum   = 0.0f;
     bool        forceRefresh   = true;
-    int         selectedRow    = -1;
+    // The selected command is named by its KEY, not its position: the row
+    // vector is rebuilt on every poll. The wire carries no owner id, so at
+    // scope "all" two connections using one key are indistinguishable here and
+    // highlight together — which is honest, and harmless for the one
+    // destructive action, since debug_draw_clear is owner-scoped agent-side.
+    std::string selectedKey;
     std::string listError;
 
-    bool        isEnabled      = true;
-    bool        hasEnableState = false;
+    // Read-only mirror of the agent's process-global overlay flag, refreshed
+    // from every debug_draw_stats poll. `hasReadEnabled` says a poll has
+    // actually answered — it is never set by the write path, so a failed
+    // toggle cannot leave the UI asserting a state nobody confirmed.
+    bool        isEnabled      = false;
+    bool        hasReadEnabled = false;
 
     std::vector<std::pair<std::string, std::string>> stats;
     bool        forceStats     = true;
@@ -495,7 +554,12 @@ struct DrawState
     std::string lastCall;
     std::string lastResult;
     ImU32       lastColor      = theme::kTextDim;
-    bool        isStoreUnknown = false;
+    // An EVENT, not a state: a batch aborted at the envelope, so what was in
+    // the store at that moment is unknowable from the reply. It therefore
+    // survives the re-list it triggers (clearing it there is what made it
+    // render on zero frames) and is cleared only by the next batch, a
+    // connection change, or the user.
+    bool        didBatchAbort  = false;
 
     ComposeForm   compose;
     BatchForm     batch;
@@ -682,49 +746,6 @@ void RefreshList(app::App &a, DrawState &st)
             break;
         }
     }
-    st.isStoreUnknown = false;
-}
-
-void RefreshEnable(app::App &a, DrawState &st)
-{
-    if (!a.rpc.IsConnected())
-    {
-        return;
-    }
-    std::vector<uint8_t> result;
-    // No params = read, don't write. The agent distinguishes the two by whether
-    // `enabled` was present, so an empty map is the read.
-    if (a.rpc.Call("debug_draw_enable", nullptr, 0, result, kCallTimeoutMs)
-        != rpc::CallStatus::Ok)
-    {
-        return;
-    }
-    Reader   r(result.data(), result.size());
-    uint32_t n = 0;
-    if (!r.ReadMapHeader(n))
-    {
-        return;
-    }
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        const char *k  = nullptr;
-        uint32_t    kn = 0;
-        if (!r.ReadString(k, kn))
-        {
-            return;
-        }
-        bool v = false;
-        if (nxt::rpc::msgpack::StrEq(k, kn, "enabled") && r.ReadBool(v))
-        {
-            st.isEnabled      = v;
-            st.hasEnableState = true;
-            continue;
-        }
-        if (!r.SkipValue())
-        {
-            return;
-        }
-    }
 }
 
 void RefreshStats(app::App &a, DrawState &st)
@@ -754,7 +775,20 @@ void RefreshStats(app::App &a, DrawState &st)
         {
             return;
         }
-        st.stats.emplace_back(std::string(k, kn), ValueToText(r));
+        std::string key(k, kn);
+        std::string value = ValueToText(r);
+        // `enabled` here is the SAME g_isEnabled that debug_draw_enable reads
+        // (Overlay.cpp:232 and :247 @7a655a8 both InterlockedCompareExchange
+        // the one flag), so this poll is the read path for the header toggle.
+        // That matters twice over: it costs no extra round trip, and the flag
+        // is process-global rather than per-connection, so another client
+        // turning the overlay off has to be able to reach this panel's UI.
+        if (key == "enabled")
+        {
+            st.isEnabled      = (value == "true");
+            st.hasReadEnabled = true;
+        }
+        st.stats.emplace_back(std::move(key), std::move(value));
     }
 }
 
@@ -795,11 +829,18 @@ void AddCaption(ParamBuilder &p, const ComposeForm &f, bool isComponent)
     p.AddStr("font", kFontNames[f.fontIdx]);
 }
 
-uint32_t ParsePoints(const char *s, int32_t *out, uint32_t cap)
+// Returns how many integers the text CONTAINS, writing at most `cap` of them.
+// The full count is the return value on purpose: silently clamping it is how
+// an over-long polyline got sent as a valid short one, which is exactly the
+// truncation this wire refuses to do and this panel says it refuses to do.
+// The caller warns on the real number and lets the agent answer
+// "poly accepts at most 32 points" for itself.
+uint32_t ParsePoints(const char *s, int32_t *out, uint32_t cap, uint32_t &outWritten)
 {
-    uint32_t n = 0;
-    const char *p = s;
-    while (*p != '\0' && n < cap)
+    uint32_t total = 0;
+    const char *p  = s;
+    outWritten     = 0;
+    while (*p != '\0')
     {
         while (*p == ',' || *p == ' ' || *p == '\t')
         {
@@ -815,10 +856,23 @@ uint32_t ParsePoints(const char *s, int32_t *out, uint32_t cap)
         {
             break;
         }
-        out[n++] = static_cast<int32_t>(v);
+        if (total < cap)
+        {
+            out[total] = static_cast<int32_t>(v);
+            outWritten = total + 1;
+        }
+        ++total;
         p = end;
     }
-    return n;
+    return total;
+}
+
+// Pairs, as the wire counts them. `points` is a flat [x, y, x, y, …].
+uint32_t PolyPointCount(const char *s)
+{
+    int32_t  scratch[2] = {};
+    uint32_t written    = 0;
+    return ParsePoints(s, scratch, 0, written) / 2u;
 }
 
 void AddComposeGeometry(const ComposeForm &f, int offsetX, ParamBuilder &p,
@@ -837,8 +891,9 @@ void AddComposeGeometry(const ComposeForm &f, int offsetX, ParamBuilder &p,
     }
     else if (std::strcmp(kind, "poly") == 0)
     {
-        const uint32_t n = ParsePoints(f.points, pointBuf, pointCap);
-        p.AddIntArray("points", pointBuf, n);
+        uint32_t written = 0;
+        ParsePoints(f.points, pointBuf, pointCap, written);
+        p.AddIntArray("points", pointBuf, written);
         p.AddBool("closed", f.isClosed);
     }
     else if (std::strcmp(kind, "text") == 0)
@@ -882,6 +937,27 @@ void BuildComposeParams(const ComposeForm &f, const char *key, int offsetX,
 // consumer that treats an envelope error as "nothing drew" is wrong about it.
 // ---------------------------------------------------------------------------
 
+// How many bytes of the 47-byte key cap the "-<index>" suffix will eat. The
+// suffix is part of the key the agent measures, so the base has to be budgeted
+// against it: a 45-character key that passes the Compose tab's own counter
+// otherwise drops EVERY item with "draw key must be 1..47 bytes" — and the
+// only evidence would be the `dropped` field.
+uint32_t BatchSuffixBytes(int itemCount)
+{
+    uint32_t digits = 1;
+    for (int n = itemCount - 1; n >= 10; n /= 10)
+    {
+        ++digits;
+    }
+    return digits + 1;   // the '-' as well
+}
+
+uint32_t BatchKeyBudget(int itemCount)
+{
+    const uint32_t suffix = BatchSuffixBytes(itemCount);
+    return (suffix >= kMaxKeyBytes) ? 1u : (kMaxKeyBytes - suffix);
+}
+
 bool EncodeBatch(const ComposeForm &f, const BatchForm &b, std::vector<uint8_t> &out)
 {
     out.assign(256 * 1024, 0);
@@ -897,10 +973,11 @@ bool EncodeBatch(const ComposeForm &f, const BatchForm &b, std::vector<uint8_t> 
             continue;
         }
         char keyBuf[80];
-        std::snprintf(keyBuf, sizeof(keyBuf), "%.48s-%d", f.key, i);
+        std::snprintf(keyBuf, sizeof(keyBuf), "%.*s-%d",
+                      static_cast<int>(BatchKeyBudget(b.itemCount)), f.key, i);
         ParamBuilder item;
-        int32_t      points[64];
-        BuildComposeParams(f, keyBuf, i * b.strideX, item, points, 64);
+        int32_t      points[kPolySendInts];
+        BuildComposeParams(f, keyBuf, i * b.strideX, item, points, kPolySendInts);
         w.WriteMapHeader(item.count);
         for (uint32_t j = 0; j < item.count; ++j)
         {
@@ -918,6 +995,8 @@ bool EncodeBatch(const ComposeForm &f, const BatchForm &b, std::vector<uint8_t> 
 
 void SendBatch(app::App &a, DrawState &st)
 {
+    // Each batch answers for itself: a clean one clears the previous abort.
+    st.didBatchAbort = false;
     std::vector<uint8_t> body;
     if (!EncodeBatch(st.compose, st.batch, body))
     {
@@ -952,7 +1031,7 @@ void SendBatch(app::App &a, DrawState &st)
         // structurally malformed leaves everything before it applied, and the
         // accumulated count dies with the call. The only honest recovery is to
         // re-read the store.
-        st.isStoreUnknown = true;
+        st.didBatchAbort = true;
         st.forceRefresh   = true;
     }
     else
@@ -1210,7 +1289,8 @@ void TrackConnection(app::App &a, DrawState &st)
         st.setsIssued      = 0;
         st.forceRefresh    = true;
         st.forceStats      = true;
-        st.hasEnableState  = false;
+        st.hasReadEnabled  = false;
+        st.didBatchAbort   = false;
     }
     st.wasConnected = isConnected;
 }
@@ -1229,15 +1309,18 @@ void AutoRefresh(app::App &a, DrawState &st)
             isDue           = true;
         }
     }
-    if (!isDue)
+    // Stats can be due on their own: a toggle wants the overlay flag re-read
+    // now rather than up to a refresh period later, since that poll is the
+    // only thing that confirms the write landed.
+    const bool isStatsDue = isDue || st.forceStats;
+    st.forceStats         = false;
+    if (isDue)
     {
-        return;
+        RefreshList(a, st);
     }
-    RefreshList(a, st);
-    RefreshStats(a, st);
-    if (!st.hasEnableState)
+    if (isStatsDue)
     {
-        RefreshEnable(a, st);
+        RefreshStats(a, st);
     }
 }
 
@@ -1277,7 +1360,7 @@ void DrawRefreshControls(DrawState &st)
 
 void DrawHeaderControls(app::App &a, DrawState &st)
 {
-    const bool isOff = a.rpc.IsConnected() && st.hasEnableState && !st.isEnabled;
+    const bool isOff = a.rpc.IsConnected() && st.hasReadEnabled && !st.isEnabled;
     theme::StatusDot(isOff ? theme::kWarn
                            : (a.rpc.IsConnected() ? theme::kGood : theme::kTextDim),
                      a.rpc.IsConnected(), 0.4f);
@@ -1292,14 +1375,28 @@ void DrawHeaderControls(app::App &a, DrawState &st)
     ImGui::BeginGroup();
     if (theme::Toggle("##ddenable", &st.isEnabled))
     {
+        // Writing does NOT make the state known. A rejected or timed-out write
+        // that left the toggle where the user dragged it would have the panel
+        // asserting a state it never confirmed — so a failure is reverted here
+        // and the next stats poll re-reads it either way.
         ParamBuilder p;
         p.AddBool("enabled", st.isEnabled);
         std::vector<uint8_t> result;
-        CallAndReport(a, st, "debug_draw_enable", p, result);
-        st.hasEnableState = true;
+        if (CallAndReport(a, st, "debug_draw_enable", p, result) != rpc::CallStatus::Ok)
+        {
+            st.isEnabled = !st.isEnabled;
+        }
+        st.forceStats = true;
     }
     ImGui::SameLine();
-    ImGui::TextUnformatted(st.isEnabled ? "overlay on" : "overlay OFF");
+    if (!st.hasReadEnabled)
+    {
+        ImGui::TextUnformatted("overlay ?");
+    }
+    else
+    {
+        ImGui::TextUnformatted(st.isEnabled ? "overlay on" : "overlay OFF");
+    }
     ImGui::EndGroup();
 
     ImGui::Spacing();
@@ -1339,12 +1436,18 @@ void DrawBanners(app::App &a, DrawState &st)
             st.didLoseDrawings = false;
         }
     }
-    if (st.isStoreUnknown)
+    if (st.didBatchAbort)
     {
         Banner(theme::kBad,
-               "! A batch failed at the envelope. Items before the failure were "
-               "already applied and the count died with the call — the table "
-               "below is a fresh read, not an assumption.");
+               "! A batch aborted at the envelope. Items before the failing one "
+               "had already been applied and the count died with the call, so "
+               "the store was re-read rather than assumed. The table below is "
+               "that fresh read.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dismiss##batchabort"))
+        {
+            st.didBatchAbort = false;
+        }
     }
     if (!st.listError.empty())
     {
@@ -1396,11 +1499,16 @@ void DrawStoreRow(DrawState &st, int index)
     const DrawRow &row = st.rows[static_cast<size_t>(index)];
     ImGui::TableNextRow();
 
+    // Keys are scoped to the CONNECTION and this panel defaults to scope
+    // "all", so two clients drawing "target-box" legitimately produce two rows
+    // spelled the same. Without a per-row id they would share one ImGui ID:
+    // highlighting together, and clicking one activating the other.
+    ImGui::PushID(index);
     ImGui::TableSetColumnIndex(0);
-    if (ImGui::Selectable(row.key.c_str(), st.selectedRow == index,
+    if (ImGui::Selectable(row.key.c_str(), st.selectedKey == row.key,
                           ImGuiSelectableFlags_SpanAllColumns))
     {
-        st.selectedRow = index;
+        st.selectedKey = row.key;
     }
     ImGui::TableSetColumnIndex(1);
     ImGui::TextUnformatted(row.kind.c_str());
@@ -1434,6 +1542,7 @@ void DrawStoreRow(DrawState &st, int index)
 
     ImGui::TableSetColumnIndex(8);
     ImGui::TextUnformatted(row.text.c_str());
+    ImGui::PopID();
 }
 
 void DrawStoreTable(DrawState &st)
@@ -1468,8 +1577,11 @@ void DrawStoreTable(DrawState &st)
 
 void DrawStoreActions(app::App &a, DrawState &st)
 {
-    const bool hasSelection = st.selectedRow >= 0
-                           && st.selectedRow < static_cast<int>(st.rows.size());
+    // Selection is the KEY, not a row index. The list is rebuilt several times
+    // a second and re-orders freely at scope "all" as other connections' TTLs
+    // expire, so an index captured at click time named a different command by
+    // the time the button was pressed.
+    const bool hasSelection = !st.selectedKey.empty();
     if (!hasSelection)
     {
         ImGui::BeginDisabled();
@@ -1477,7 +1589,7 @@ void DrawStoreActions(app::App &a, DrawState &st)
     if (ImGui::Button("Clear selected") && hasSelection)
     {
         ParamBuilder p;
-        p.AddStr("key", st.rows[static_cast<size_t>(st.selectedRow)].key.c_str());
+        p.AddStr("key", st.selectedKey.c_str());
         std::vector<uint8_t> result;
         CallAndReport(a, st, "debug_draw_clear", p, result);
         st.forceRefresh = true;
@@ -1598,6 +1710,7 @@ void DrawComposeGeometryForm(ComposeForm &f)
     else if (std::strcmp(kind, "poly") == 0)
     {
         ImGui::InputText("points", f.points, sizeof(f.points));
+        DrawLimitCaption(PolyPointCount(f.points), kMaxPolyPairs, "points");
         theme::Subheading("flat x,y pairs — 2 to 32 of them. Rejected in world "
                           "space (\"world space does not support poly\").");
         ImGui::Checkbox("closed", &f.isClosed);
@@ -1649,8 +1762,8 @@ void DrawCaptionForm(ComposeForm &f, bool isComponent)
 void SendCompose(app::App &a, DrawState &st)
 {
     ParamBuilder p;
-    int32_t      points[64];
-    BuildComposeParams(st.compose, st.compose.key, 0, p, points, 64);
+    int32_t      points[kPolySendInts];
+    BuildComposeParams(st.compose, st.compose.key, 0, p, points, kPolySendInts);
     std::vector<uint8_t> result;
     CallAndReport(a, st, "debug_draw_set", p, result);
     ++st.setsIssued;
@@ -1723,6 +1836,24 @@ void DrawComposeTab(app::App &a, DrawState &st)
 // Batch tab
 // ---------------------------------------------------------------------------
 
+// The Compose tab's counter measures the key alone; here the "-<index>" suffix
+// is part of what the agent measures, so the base key has a smaller budget and
+// the user is told which one applies before pressing send.
+void DrawBatchKeyBudget(const DrawState &st, int itemCount)
+{
+    const uint32_t budget  = BatchKeyBudget(itemCount);
+    const uint32_t keyUsed = static_cast<uint32_t>(std::strlen(st.compose.key));
+    DrawLimitCaption(keyUsed, budget, "UTF-8 bytes of base key");
+    if (keyUsed <= budget)
+    {
+        return;
+    }
+    Banner(theme::kWarn,
+           "The Compose key plus this batch's \"-<index>\" suffix exceeds 47 "
+           "bytes. It is truncated to fit rather than dropped item by item — "
+           "shorten the key if you need it to round-trip.");
+}
+
 void DrawBatchTab(app::App &a, DrawState &st)
 {
     BatchForm &b = st.batch;
@@ -1736,6 +1867,8 @@ void DrawBatchTab(app::App &a, DrawState &st)
                "nothing is applied and the reply is an envelope error.");
     }
     ImGui::SliderInt("x stride", &b.strideX, 0, 64);
+
+    DrawBatchKeyBudget(st, b.itemCount);
 
     ImGui::Spacing();
     if (ImGui::CollapsingHeader("Fault injection"))

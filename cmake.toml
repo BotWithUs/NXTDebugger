@@ -124,9 +124,15 @@ message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
 # deliberately not in wire/ (not in SHM, does not move kProtocolVersion, and
 # overlay/DrawTypes.h carries game internals that must not be published).
 #
-# Same conditional shape as the two above: the script self-skips with a status
-# line when no producer checkout sits beside us, so a public clone still
-# configures.
+# Same conditional shape as the two above: the script self-skips when no
+# producer checkout sits beside us, so a public clone still configures.
+#
+# The success path echoes the script's OWN last line rather than a fixed
+# string. A fixed "caps match the producer" would print identically whether 11
+# caps were compared or the check never ran at all -- "gate passed" and "gate
+# never ran" reading the same is the exact failure this family of checks exists
+# to prevent, and it would be worse here than elsewhere because the numbers in
+# question are ones the panel shows the user as fact.
 execute_process(
     COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_draw_caps.ps1
@@ -137,7 +143,8 @@ if(NOT _caps_result EQUAL 0)
     message(FATAL_ERROR
         "The Debug Draw panel's caps have drifted from the producer:\\n${_caps_output}")
 endif()
-message(STATUS "NXTDebugger: Debug Draw panel caps match the producer")
+string(STRIP "${_caps_output}" _caps_output)
+message(STATUS "NXTDebugger: Debug Draw panel caps -- ${_caps_output}")
 
 # FreeType: build the standalone static library — no zlib / png / harfbuzz /
 # brotli / bzip2 transitive deps. We only need it as ImGui's font rasterizer.

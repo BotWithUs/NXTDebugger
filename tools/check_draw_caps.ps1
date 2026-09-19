@@ -67,7 +67,10 @@ if (-not (Test-Path -LiteralPath $panelPath))
 if (-not (Test-Path -LiteralPath $drawTypesPath) -or
     -not (Test-Path -LiteralPath $handlersPath))
 {
-    Write-Host "  skip    draw caps -- no producer checkout at $NxtLibraryRoot"
+    # SKIPPED, and it must not read as PASSED. The caller prints this line
+    # verbatim on the success path precisely so that "nothing was checked" and
+    # "everything checked out" cannot produce the same entry in the CMake log.
+    Write-Host "SKIPPED - nothing was checked: no producer checkout at $NxtLibraryRoot"
     exit 0
 }
 
@@ -237,5 +240,5 @@ if ($failures.Count -gt 0)
     exit 1
 }
 
-Write-Host "Debug Draw panel caps match the producer ($($mappings.Count) checked)."
+Write-Host "checked $($mappings.Count) cap(s) against the producer - all match"
 exit 0
