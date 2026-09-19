@@ -601,11 +601,15 @@ only by agent reload except `pending`, which is a level:
   it.
 - **`lost_claim`** — the agent's atomic claim on a ring slot lost to a genuine
   click. Nothing was written.
-- **`collided`** — after shipping, the entry at the read head was **not** the
-  agent's: a genuine writer had taken the slot and overwritten it. The agent
-  declined to retract, which is correct — the pending entry is the user's and
-  consuming it would swallow a real click. The cost is that the packet shipped
-  was a duplicate of the user's own click.
+- **`collided`** — after shipping, the timestamp at the read head was not the
+  one the agent wrote. **Rare and narrow**: the agent claims its slot before
+  filling it, and the client's writer re-reads the head before every store, so a
+  whole-entry clobber cannot happen. What can happen is one *delayed* store —
+  the writer's last head load and its timestamp store are three instructions
+  apart, so a thread deschedule spanning the agent's claim, fill and ship lands
+  that store on an already-filled slot. What is then left pending carries the
+  **agent's** coordinate with a foreign timestamp, so this counter is a
+  phantom-click risk rather than a duplicated user click. Non-zero means look.
 - **`raced`** — the ring's write head moved *at all* during the agent's window,
   **including when the retract then succeeded**. See the note below before
   acting on this one.
@@ -615,7 +619,9 @@ only by agent reload except `pending`, which is a level:
   attempt, `(write - read) mod capacity`. A level, not a cumulative count, and
   the only one that is not monotonic. **A correct retract leaves this at 0**, so
   it is the direct check that the retract worked rather than an inference from a
-  later injection succeeding.
+  later injection succeeding. It is sampled on *every* attempt, including the
+  ones that skip — so when `busy` is climbing on an idle client, this is the
+  field that tells you whether the ring really is backing up.
 
 **`collided` and `raced` are different facts, and a consumer that watches only
 one of them will draw the wrong conclusion about how often the race is live.**
@@ -633,9 +639,11 @@ That wording is deliberate, because the failure it covers is worse than a lost
 telemetry entry. The client's own writer **re-reads the ring's write head before
 every one of its six field stores and never caches the slot.** So a head change
 landing mid-writer does not merely race the entry — it **tears it across two
-slots**: the button id goes to the old slot and the remaining five fields to the
-new one. What is left pending is an entry with a **real coordinate and a stale
-button id**, which the game then consumes. The counters in that case read
+slots**, and where the split falls decides how bad it is. Split after the first
+store and the new slot gets a **real coordinate with a stale button id**. Split
+later — after x and y have already gone to the old slot — and the new slot keeps
+**stale coordinates too**, leaving a pending click at a wholly stale position.
+Either way the game consumes it. The counters in that case read
 `raced: 1, injected: 1` with everything else zero — **indistinguishable from the
 benign interleaving.**
 
@@ -643,7 +651,8 @@ So: treat `injected` as the health signal; `collided`, `lost_claim`, `no_ring`
 and `no_ship` as faults; `not_in_world` as an ordinary skip; `busy` as ordinary
 *unless* it is sustained on an idle client; and `raced` as a rate meaning "the
 race was live and the outcome is unknown". Do not read a non-zero `raced` with a
-clean `collided` as evidence that nothing went wrong.
+clean `collided` as evidence that nothing went wrong — `collided` is the narrow,
+detectable corner of that race, and `raced` is the rest of it.
 
 `_debug.inject_click({x, y, scale_milli?})` drives one injection with
 caller-supplied coordinates and answers `{accepted: bool}` (whether the work was
