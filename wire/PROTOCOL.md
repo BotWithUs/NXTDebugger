@@ -527,7 +527,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
 | Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
-| Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path` |
+| Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `_debug.inject_click` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
@@ -563,6 +563,88 @@ Four gaps worth knowing before you design around them:
   capped at 256 rows. Graphics playing *on* an NPC or player are not in that
   list — read those from `spotAnimId` on the snapshot's entity rows, or from
   event type 72 (§2.8).
+
+#### Click telemetry — `click_stats` and `_debug.inject_click`
+
+The agent writes the client's **two** mouse-click recorders when it dispatches an
+action, so the server sees the click pattern a real user produces. The second of
+those — the one the client serialises *first* each tick, and the one the server's
+activity/AFK timer watches — is **not a telemetry sink**: its serializer never
+advances the ring's read head, the client's own consumers (`MiniMenu`,
+`InterfaceManager`) do. The agent therefore injects an entry, lets the client
+ship it, and retracts it inside a single window where no consumer can observe it.
+
+That sequence can be interfered with by a genuine hardware click arriving on
+another thread, and **the interference cannot be fully prevented** — the client's
+writer updates its head with a plain non-atomic increment that the agent cannot
+change. `click_stats` is how that is made observable instead of silent.
+
+`click_stats` takes no parameters and answers seven monotonic counters, reset
+only by agent reload:
+
+- **`injected`** — entries that were shipped by the client's serializer **and**
+  retracted cleanly. This is the success counter, and the only positive evidence
+  the feature did anything.
+- **`busy`** — skipped because the ring was not drained (`read != write`).
+  **Expected and correct, not an error.** The agent only injects into an empty
+  ring, because the serializer ships the entry at the *read* head: injecting
+  behind a pending entry would ship the user's click instead of the agent's and
+  then consume theirs. The ring is non-empty exactly when the user is clicking,
+  which is already resetting the timer the injection exists to reset.
+- **`not_ready`** — skipped because the client was not in-game, the connection
+  was down, or the ring could not be resolved. Not an error either.
+- **`lost_claim`** — the agent's atomic claim on a ring slot lost to a genuine
+  click. Nothing was written.
+- **`collided`** — after shipping, the entry at the read head was **not** the
+  agent's: a genuine writer had taken the slot and overwritten it. The agent
+  declined to retract, which is correct — the pending entry is the user's and
+  consuming it would swallow a real click. The cost is that the packet shipped
+  was a duplicate of the user's own click.
+- **`raced`** — the ring's write head moved *at all* during the agent's window,
+  **including when the retract then succeeded**. This is the one most easily
+  misread as a fault; see the note below before acting on it.
+- **`no_ship`** — the serializer could not be called (null vtable or slot). The
+  entry was still retracted, but nothing went on the wire.
+
+**`collided` and `raced` are different facts, and a consumer that watches only
+one of them will draw the wrong conclusion about how often the race is live.**
+
+- `collided` is a *detection*: the agent saw a genuine writer take its slot and
+  correctly declined to retract.
+- `raced` is *exposure*: the head moved inside the window. That includes the
+  mirror interleaving — the agent's own fill landing after the genuine one, so
+  the timestamp still matches and the retract succeeds — which **no state the
+  agent can read distinguishes from the benign case**. `raced` exists precisely
+  because that ambiguity is real and cannot be resolved from inside the agent.
+
+So `raced` is **not an error count**. It can advance while `injected` advances
+and every other counter stays zero, and that is a healthy reading: it means a
+real click overlapped the window and the sequence still completed. Treat
+`injected` as the health signal, `collided` / `lost_claim` / `no_ship` as faults,
+`busy` / `not_ready` as ordinary skips, and `raced` as a rate to watch rather
+than a number to alarm on.
+
+`_debug.inject_click({x, y, scale_milli?})` drives one injection with
+caller-supplied coordinates and answers `{accepted: bool}` (whether the work was
+queued onto the game thread). `scale_milli` is the client-pixel to
+interface-space factor times 1000, default 1000.
+
+**It bypasses the world-to-screen projection and nothing else.** Everything after
+that point is the production path verbatim — the same pending-click slot, the
+same game-thread pump running after the client's own tick, the same injection,
+serialization and retraction. It is not a test-only reimplementation, and a
+scenario built on it exercises the real mechanism; only the choice of coordinate
+is synthetic. The coordinates are supplied rather than projected so that a test
+cannot fail for an unrelated reason: a target that projects behind the camera is
+*correctly* suppressed by the production policy, which would make a projection-
+driven assertion flaky rather than meaningful.
+
+It moves no character and mutates no game state. The `_debug.` prefix is
+wire-load-bearing — the dispatcher's auto-tap exclusion keys off those literal
+seven bytes — but unlike the three broker methods this is not a broker call.
+
+Neither method moves `kProtocolVersion`: both are additive over the RPC pipe and
+neither touches `Snapshot`.
 
 #### Debug drawing
 
