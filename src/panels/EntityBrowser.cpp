@@ -185,18 +185,27 @@ void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("locs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("locs", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                     | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Type", "Name", "Tile", "Shape", "Rot", "Anim", "Interact", "Flags" };
-    TableHeader(cols, 8);
+    const char *cols[] = { "Type", "Morph", "Name", "Tile", "Shape", "Rot",
+                           "Anim", "Interact", "Flags" };
+    TableHeader(cols, 9);
 
     for (uint32_t i = 0; i < s.locationCount; ++i)
     {
         const auto &l = s.locations[i];
-        std::snprintf(buf, sizeof(buf), "%d %d %d", l.typeId, l.tileX, l.tileY);
+        // The base id the row publishes: a combined section carries it in
+        // typeId, a direct LOCATION in interactId. Same pick every consumer
+        // makes, and the one the Morph column is judged against.
+        const bool section = (l.flags & nxt::ipc::kLocFlagCombinedSection) != 0;
+        const int32_t baseId  = section ? l.typeId : l.interactId;
+        const bool    morphed = baseId > 0 && l.resolvedId != baseId;
+
+        std::snprintf(buf, sizeof(buf), "%d %d %d %d",
+                      l.typeId, l.resolvedId, l.tileX, l.tileY);
         if (!fb.Match(fb.text, buf)) continue;
 
         ImGui::TableNextRow();
@@ -204,16 +213,34 @@ void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
         ImGui::Text("%d", l.typeId);
         ImGui::PopStyleColor();
+
+        // Only the rows the producer actually transformed earn ink here. On
+        // everything else resolvedId equals the base id by contract, so
+        // printing it would be a column of noise hiding the few that matter.
         ImGui::TableSetColumnIndex(1);
+        if (morphed)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kInfo));
+            ImGui::Text("%d", l.resolvedId);
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            ImGui::TextDisabled("—");
+        }
+
+        // Named off resolvedId, never the base: a morph loc's base definition
+        // has an empty name, which is the whole reason v20 publishes this.
+        ImGui::TableSetColumnIndex(2);
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-        ImGui::TextUnformatted(CacheName(a, "loc", l.typeId).c_str());
+        ImGui::TextUnformatted(CacheName(a, "loc", l.resolvedId).c_str());
         ImGui::PopStyleColor();
-        ImGui::TableSetColumnIndex(2); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
-        ImGui::TableSetColumnIndex(3); ImGui::Text("%u", unsigned(l.shape));
-        ImGui::TableSetColumnIndex(4); ImGui::Text("%u", unsigned(l.rotation));
-        ImGui::TableSetColumnIndex(5); IntOrDash(l.animationId);
-        ImGui::TableSetColumnIndex(6); IntOrDash(l.interactId);
-        ImGui::TableSetColumnIndex(7);
+        ImGui::TableSetColumnIndex(3); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
+        ImGui::TableSetColumnIndex(4); ImGui::Text("%u", unsigned(l.shape));
+        ImGui::TableSetColumnIndex(5); ImGui::Text("%u", unsigned(l.rotation));
+        ImGui::TableSetColumnIndex(6); IntOrDash(l.animationId);
+        ImGui::TableSetColumnIndex(7); IntOrDash(l.interactId);
+        ImGui::TableSetColumnIndex(8);
         if (l.flags & nxt::ipc::kLocFlagHidden)          theme::Pill("hidden",  theme::kBad);
         if (l.flags & nxt::ipc::kLocFlagCombinedSection) theme::Pill("section", theme::kInfo);
         if (l.flags & nxt::ipc::kLocFlagDeleted)         theme::Pill("deleted", theme::kBad);
