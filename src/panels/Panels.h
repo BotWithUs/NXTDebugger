@@ -20,6 +20,7 @@ void DrawScriptContext    (app::App &);
 void DrawInterfacePanel   (app::App &);
 void DrawVarWatcher       (app::App &);
 void DrawSessionHealth    (app::App &);
+void DrawDebugDraw        (app::App &);
 void DrawLogPanel         (app::App &);
 
 }
