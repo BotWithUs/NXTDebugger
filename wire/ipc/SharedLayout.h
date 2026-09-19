@@ -22,6 +22,18 @@ namespace nxt::ipc {
 
 // Magic = 'N' 'X' 'T' 'S' little-endian. Consumers verify before binding.
 inline constexpr uint32_t kMagic           = 0x5354584Eu;
+// v20 widened LocationEntry from 20 to 24 bytes with a trailing resolvedId —
+// the loc id after the producer applies the morphvarp ("multiloc") transform.
+// Scene locs whose look and menu are chosen by a var are published by the
+// server as a base id whose definition has an empty name and empty options, so
+// every consumer that matched a Range, a bonfire, a bank chest, a construction
+// hotspot or most instanced scenery by name or option matched nothing. The
+// base id stays exactly where it was in typeId/interactId, because that is
+// what identity, hardcoded id sets and interaction are keyed on; resolvedId is
+// additive beside it and is what a definition lookup must use. Growing the row
+// shifts every offset past locations[], so this is a hard version bump —
+// sizeof(Snapshot) goes from 365744 to 398512.
+//
 // v19 appended the dynRegion + dynChunks[] tail block — the RS3 "dynamic
 // region" (instance) descriptor. When the server rebuilds a scene from a chunk
 // table (POH, Dungeoneering floor, most boss instances) the client stops
@@ -80,7 +92,7 @@ inline constexpr uint32_t kMagic           = 0x5354584Eu;
 // v13 dropped the per-interface ifaceVersions[] array. Interface state is now
 // read fresh on demand via the RPC handlers, so the consumer no longer caches
 // component results behind an invalidation token.
-inline constexpr uint32_t kProtocolVersion = 19;
+inline constexpr uint32_t kProtocolVersion = 20;
 
 // Caps mirror the game's own protocol caps:
 //   - NPCs: the client tracks at most 1024 loaded NPCs.
@@ -267,9 +279,26 @@ struct LocationEntry {
     uint8_t shape;         // 17  scenery shape code
     uint8_t rotation;      // 18  0..3
     uint8_t flags;         // 19  kLocFlagHidden | kLocFlagCombinedSection | kLocFlagDeleted
+    // v20. The loc id a name / option lookup must use for this row, with the
+    // morphvarp ("multiloc") transform already applied by the producer.
+    //
+    // The base id stays authoritative for identity and for the action the row
+    // takes: it is what the server sent, what scripts hardcode and what
+    // interaction is addressed by, and it is unchanged in typeId/interactId.
+    // This field is the *appearance* id — the definition that actually carries
+    // the name and the options the player sees. A Range published as base
+    // 125195 has no name and no options at all; resolved it is 125205 "Range"
+    // with "Cook-at".
+    //
+    // Always a usable id, never a sentinel: it equals the row's base id when
+    // the loc is not a multiloc, and also when the producer declines to
+    // resolve (no table, unreadable var, or a transform entry of -1). A
+    // consumer needs no null handling and no second lookup.
+    int32_t resolvedId;    // 20
 };
-static_assert(sizeof(LocationEntry) == 20);
+static_assert(sizeof(LocationEntry) == 24);
 static_assert(alignof(LocationEntry) == 4);
+static_assert(offsetof(LocationEntry, resolvedId) == 20, "resolvedId offset");
 
 // One snapshot row per alive ground-item stack. The producer sweeps the
 // loaded-scene tile bounds and emits a row per alive stack with itemId >= 0. No
@@ -428,8 +457,8 @@ struct Snapshot {
     // kLocFlagCombinedSection in flags.
     uint32_t      locationCount;
     LocationEntry locations[kLocationCap];
-    // 4-byte explicit pad. locationCount (u32) + locations (kLocationCap*20)
-    // is 163844 bytes, which lands at 4 mod 8. Without this pad the compiler
+    // 4-byte explicit pad. locationCount (u32) + locations (kLocationCap*24)
+    // is 196612 bytes, which lands at 4 mod 8. Without this pad the compiler
     // inserts implicit padding before ProducerState (alignof 8) and the Java
     // side cannot see the gap by formula. Same pattern as Snapshot::_reserved0.
     uint32_t      _padAfterLocations;
@@ -678,15 +707,17 @@ static_assert(sizeof(Snapshot) == 68 + sizeof(DynamicRegion)
                                 + sizeof(uint32_t)        * kDynChunkCap,
               "Snapshot has unexpected trailing padding");
 
-// Absolute pins on the v19 tail. Every other assert above is expressed
+// Absolute pins on the v20 tail. Every other assert above is expressed
 // relatively, which means two simultaneous cap edits could cancel out and still
 // pass the whole chain. These two cannot — update them deliberately, never
-// mechanically, and only when the wire genuinely moved.
-static_assert(offsetof(Snapshot, dynRegion) == 300168, "v19 dynRegion offset drifted");
-// Literal, deliberately NOT written as `300208 + sizeof(uint32_t) * kDynChunkCap`
+// mechanically, and only when the wire genuinely moved. Both moved by
+// kLocationCap * 4 in v20, which is the whole cost of LocationEntry::resolvedId
+// (was 300168 / 365744 in v19).
+static_assert(offsetof(Snapshot, dynRegion) == 332936, "v20 dynRegion offset drifted");
+// Literal, deliberately NOT written as `332976 + sizeof(uint32_t) * kDynChunkCap`
 // — that form is parameterised on the cap and would keep passing through a cap
 // change, which is exactly the drift this assert exists to catch.
-static_assert(sizeof(Snapshot) == 365744, "v19 Snapshot size drifted");
+static_assert(sizeof(Snapshot) == 398512, "v20 Snapshot size drifted");
 static_assert(sizeof(Snapshot) % 8 == 0, "Snapshot must stay 8-aligned end-to-end");
 
 // Header sits at offset 0. 64-byte aligned so it sits on a single cache line.

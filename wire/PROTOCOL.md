@@ -1,4 +1,4 @@
-# BotWithUs agent wire protocol — v19
+# BotWithUs agent wire protocol — v20
 
 How to read live RuneScape 3 state out of the BotWithUs agent, and how to drive
 it, from **any language**. This is the normative description of the bytes; the
@@ -29,7 +29,7 @@ every client logic step (~20ms) and costs a consumer nothing but a memory read.
 
 ## 1. Versioning
 
-`kProtocolVersion` is **19**.
+`kProtocolVersion` is **20**.
 
 - The version gates the **snapshot layout only**. Field offsets move between
   versions and there is **no forward compatibility**.
@@ -53,23 +53,23 @@ user as the client.
 Then validate, in this order:
 
 1. `magic` == `0x5354584E` (`'N','X','T','S'` LE). Wrong magic → not our region.
-2. `version` == `19`. Mismatch → refuse (see §1).
-3. `headerSize` == 64 and `snapshotSize` == 365744 as a sanity check.
+2. `version` == `20`. Mismatch → refuse (see §1).
+3. `headerSize` == 64 and `snapshotSize` == 398512 as a sanity check.
 
 ### 2.2 Region geometry
 
 | Constant | Value |
 |---|---|
 | `kMagic` | `0x5354584E` |
-| `kProtocolVersion` | 19 |
+| `kProtocolVersion` | 20 |
 | `sizeof(SharedHeader)` | 64 |
-| `sizeof(Snapshot)` | 365744 |
-| snapshot stride (padded to 64B) | 365760 |
+| `sizeof(Snapshot)` | 398512 |
+| snapshot stride (padded to 64B) | 398528 |
 | Snapshot[0] offset | 64 |
-| Snapshot[1] offset | 365824 |
-| Event ring offset | 731584 |
+| Snapshot[1] offset | 398592 |
+| Event ring offset | 797120 |
 | Event ring size (padded) | 131136 |
-| Total region size | 862720 |
+| Total region size | 928256 |
 
 Do not hardcode these blindly — the header carries `snapshotOff0`,
 `snapshotOff1`, `ringOff` and `ringSize` for exactly this reason. Prefer reading
@@ -80,10 +80,10 @@ them.
 | field | off | size | notes |
 |---|---|---|---|
 | `magic` | 0 | 4 | `'N','X','T','S'` |
-| `version` | 4 | 4 | == 19 |
+| `version` | 4 | 4 | == 20 |
 | `headerSize` | 8 | 4 | == 64 |
 | `layoutId` | 12 | 4 | reserved, 0 |
-| `snapshotSize` | 16 | 4 | == 365744 |
+| `snapshotSize` | 16 | 4 | == 398512 |
 | `snapshotOff0` | 20 | 4 | byte offset of buffer 0 |
 | `snapshotOff1` | 24 | 4 | byte offset of buffer 1 |
 | `ringOff` | 28 | 4 | byte offset of the event ring |
@@ -100,7 +100,7 @@ that reads the front buffer races with nothing.
 ```
 idx  = atomic_load_acquire(header.frontIdx)     // 0 or 1
 base = (idx == 0) ? header.snapshotOff0 : header.snapshotOff1
-copy 365744 bytes from mapping[base]            // then parse the copy
+copy 398512 bytes from mapping[base]            // then parse the copy
 ```
 
 Two rules that matter:
@@ -116,7 +116,7 @@ Two rules that matter:
 There is no reader registration and no backpressure — the producer never waits
 for you.
 
-### 2.5 `Snapshot` (365744 bytes)
+### 2.5 `Snapshot` (398512 bytes)
 
 | field | off | size | notes |
 |---|---|---|---|
@@ -131,22 +131,22 @@ for you.
 | `playerCount` | 37444 | 4 | |
 | `players` | 37448 | 57344 | `PlayerEntry[2048]`, stride 28 |
 | `locationCount` | 94792 | 4 | |
-| `locations` | 94796 | 163840 | `LocationEntry[8192]`, stride 20 |
-| `inventoryCount` | 258640 | 4 | |
-| `inventories` | 258644 | 256 | `InventoryHeader[32]`, stride 8 |
-| `invItemCount` | 258900 | 4 | |
-| `invItems` | 258904 | 16384 | `InventoryItem[2048]`, stride 8 |
-| `producer` | 275288 | 32 | `ProducerState`, §2.9 |
-| `openIfaceCount` | 275320 | 4 | |
-| `openIfaces` | 275324 | 256 | `int32[64]` — open sub-interface ids |
-| `groundItemCount` | 275580 | 4 | |
-| `groundItems` | 275584 | 16384 | `GroundItemEntry[1024]`, stride 16 |
-| `projectileCount` | 291968 | 4 | |
-| `projectiles` | 291972 | 8192 | `ProjectileEntry[256]`, stride 32 |
-| `gameCycle` | 300164 | 4 | **~20ms client cycle**, see §2.6 |
-| `dynRegion` | 300168 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
-| `dynChunkCount` | 300204 | 4 | |
-| `dynChunks` | 300208 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
+| `locations` | 94796 | 196608 | `LocationEntry[8192]`, stride 24 |
+| `inventoryCount` | 291408 | 4 | |
+| `inventories` | 291412 | 256 | `InventoryHeader[32]`, stride 8 |
+| `invItemCount` | 291668 | 4 | |
+| `invItems` | 291672 | 16384 | `InventoryItem[2048]`, stride 8 |
+| `producer` | 308056 | 32 | `ProducerState`, §2.9 |
+| `openIfaceCount` | 308088 | 4 | |
+| `openIfaces` | 308092 | 256 | `int32[64]` — open sub-interface ids |
+| `groundItemCount` | 308348 | 4 | |
+| `groundItems` | 308352 | 16384 | `GroundItemEntry[1024]`, stride 16 |
+| `projectileCount` | 324736 | 4 | |
+| `projectiles` | 324740 | 8192 | `ProjectileEntry[256]`, stride 32 |
+| `gameCycle` | 332932 | 4 | **~20ms client cycle**, see §2.6 |
+| `dynRegion` | 332936 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
+| `dynChunkCount` | 332972 | 4 | |
+| `dynChunks` | 332976 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
 
 Every `*Count` is the live entry count; **entries past it are stale and must not
 be read**. Counts saturate at the array cap and the producer truncates silently,
@@ -219,13 +219,37 @@ dedupe keys on identity rather than on `spotAnimId`, so two concurrent casts of
 the same graphic stay distinct. World-anchored graphics are a separate list —
 `query_spot_anims` (§4.4), not these fields.
 
-**`LocationEntry`** (20) — scenery. `typeId` 0, `interactId` 4, `animationId` 8,
-`tileX` 12, `tileY` 14, `plane` 16, `shape` 17, `rotation` 18, `flags` 19.
+**`LocationEntry`** (24) — scenery. `typeId` 0, `interactId` 4, `animationId` 8,
+`tileX` 12, `tileY` 14, `plane` 16, `shape` 17, `rotation` 18, `flags` 19,
+`resolvedId` 20 (**v20+**).
 `flags` bits: `1` hidden, `2` combined-section, `4` deleted. A multi-tile object
 emits a parent row plus one row per section; parents and sections legitimately
 share `(tile, typeId)`, so **the combined-section bit is the only way to tell
 them apart**. `interactId` is -1 for sections. Script-facing hosts call this a
 *SceneObject*.
+
+**The row carries two ids and they answer different questions.** The *base id*
+is what the server sent and is where identity, hardcoded id sets and
+interaction are keyed: it is `interactId` on a direct row and `typeId` on a
+combined-section row — the same pick the combined-section bit already forces
+you to make. `resolvedId` is the *appearance* id: the definition that actually
+carries the name and the right-click options, with the morphvarp ("multiloc")
+transform already applied by the producer.
+
+Use `resolvedId` for **every name or option lookup**, and the base id for
+identity and for addressing an interaction. A morph loc is published by the
+server as one base id whose definition has an empty name and no options at all
+— Ranges, bonfires, bank chests, construction hotspots and most instanced
+scenery are all morph locs — so a consumer matching a base id against the cache
+matches nothing. A Range published as base `125195` resolves to `125205`
+"Range" with `["Cook-at"]`.
+
+`resolvedId` is **always a usable id and never a sentinel**: it equals the row's
+base id when the loc is not a multiloc, and also when the producer declines to
+resolve (no transform table, an unreadable var, or a transform entry of -1). No
+null handling and no second lookup is needed. Clicking is unaffected either way
+— an interaction addressed to the base id already works, because the client
+resolves the loc itself. Only *discovery* was ever broken.
 
 **`GroundItemEntry`** (16) — `itemId` 0, `quantity` 4, `tileX` 8, `tileY` 10,
 `plane` 12. One row per alive stack within the loaded scene.
@@ -271,7 +295,7 @@ table, and the client stamps the scene out of 8x8-tile chunks **copied from
 static source regions**. This block publishes that table, so a consumer holding
 static map data can map an instance tile back to the tile it was copied from.
 
-`DynamicRegion` (36 bytes, at snapshot offset 300168):
+`DynamicRegion` (36 bytes, at snapshot offset 332936):
 
 | field | off | size | notes |
 |---|---|---|---|
@@ -527,7 +551,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
 | Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
-| Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `_debug.inject_click` |
+| Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `move_stats`, `_debug.inject_click` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
 | Scene queries | `query_spot_anims`, `query_world_map_elements` |
@@ -702,6 +726,46 @@ seven bytes — but unlike the three broker methods this is not a broker call.
 
 Neither method moves `kProtocolVersion`: both are additive over the RPC pipe and
 neither touches `Snapshot`.
+
+#### Move telemetry — `move_stats`
+
+The agent also writes the client's **normal move ring** — the mouse-movement
+samples the server's movement telemetry watches — and moves the client's own
+cursor. `move_stats` is the observability for that path, the movement analogue
+of `click_stats` above. It takes no parameters and answers thirteen fields.
+
+Nine integer counters, monotonic and reset only by agent reload, except
+`pending` which is a level:
+
+- **`samples`** — move samples written into the ring.
+- **`batches`** — flushes of a queued path.
+- **`orphaned`** — a path was queued with **no click to flush it**. The client
+  drains its move ring only when a click is pending or 2000 ms have passed, so
+  an unpaired path can neither ship nor be left sitting in the ring.
+- **`no_scale`** — the client-pixel to interface-space factor was unresolvable.
+- **`queue_occupied`** — the pending slot already held work.
+- **`dropped`** — samples discarded rather than written.
+- **`bad_head`** — the ring's head did not read plausibly.
+- **`not_drained`** — entries still in the ring after the flush. **Not cosmetic
+  residue**: this is the phantom-hover exposure, and it is the one counter here
+  whose non-zero value means the client is being told something false.
+- **`pending`** — samples currently queued. A level, not a total.
+
+Four doubles, each **read back out of the client after the write**:
+
+- **`cursor_raw_x`**, **`cursor_raw_y`** — the cursor as the client's own scene
+  pick reads it.
+- **`cursor_iface_x`**, **`cursor_iface_y`** — the cursor as interface hover
+  reads it.
+
+**Assert on the cursor fields, not on `samples`.** Every counter above is an
+agent-side tally that a write happened — which stayed true throughout a
+coordinate type-pun bug while every coordinate actually reaching the server was
+0. The four doubles are read back through the same offsets the client's scene
+pick and interface hover use, so they move when the behaviour moves and cannot
+be satisfied by a write that landed in the wrong place or the wrong format.
+
+Additive over the RPC pipe — does **not** move `kProtocolVersion`.
 
 #### Debug drawing
 
