@@ -615,6 +615,13 @@ only by agent reload except `pending`, which is a level:
   acting on this one.
 - **`no_ship`** — the serializer could not be called (null vtable or slot). The
   entry was still retracted, but nothing went on the wire.
+- **`queue_occupied`** — a click was **refused** because the previous one had not
+  been pumped yet. This is the single-slot *queue*, one stage before the ring, so
+  it is **not** the same fact as `busy`: `busy` means the client had not drained
+  its ring, while this means the **caller outran the tick**. It cannot be reached
+  by the agent's own action dispatch, which queues at most one click per tick and
+  drains it in the same tick, so a non-zero value means someone is driving
+  `_debug.inject_click` faster than the game loop.
 - **`pending`** — entries left in the ring immediately after the most recent
   attempt, `(write - read) mod capacity`. A level, not a cumulative count, and
   the only one that is not monotonic. **A correct retract leaves this at 0**, so
@@ -649,15 +656,24 @@ benign interleaving.**
 
 So: treat `injected` as the health signal; `collided`, `lost_claim`, `no_ring`
 and `no_ship` as faults; `not_in_world` as an ordinary skip; `busy` as ordinary
-*unless* it is sustained on an idle client; and `raced` as a rate meaning "the
+*unless* it is sustained on an idle client; `queue_occupied` as a statement about
+the **caller**, not the agent — harmless from a test driver, meaningless from the
+action path, which cannot produce it; and `raced` as a rate meaning "the
 race was live and the outcome is unknown". Do not read a non-zero `raced` with a
 clean `collided` as evidence that nothing went wrong — `collided` is the narrow,
 detectable corner of that race, and `raced` is the rest of it.
 
 `_debug.inject_click({x, y, scale_milli?})` drives one injection with
-caller-supplied coordinates and answers `{accepted: bool}` (whether the work was
-queued onto the game thread). `scale_milli` is the client-pixel to
-interface-space factor times 1000, default 1000.
+caller-supplied coordinates and answers `{accepted: bool}`. `scale_milli` is the
+client-pixel to interface-space factor times 1000, default 1000.
+
+**`accepted` means the work was posted to the game thread, and nothing more.**
+The reply is written before the queue attempt happens, so it does **not** mean a
+click was queued and certainly not that one was injected — a caller going faster
+than one call per tick gets `accepted: true` for a click the pending slot then
+refuses, which surfaces only as `queue_occupied` on `click_stats`. **Assert on
+`injected` advancing, never on `accepted`.** Measured before that counter
+existed: 20 rapid calls, 12 injections, every counter zero.
 
 **It bypasses the world-to-screen projection and the action-queue gates;
 everything after `QueueActionClick` is the production path verbatim** — the same
