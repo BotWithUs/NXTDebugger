@@ -579,20 +579,26 @@ another thread, and **the interference cannot be fully prevented** — the clien
 writer updates its head with a plain non-atomic increment that the agent cannot
 change. `click_stats` is how that is made observable instead of silent.
 
-`click_stats` takes no parameters and answers seven monotonic counters, reset
-only by agent reload:
+`click_stats` takes no parameters and answers nine counters, monotonic and reset
+only by agent reload except `pending`, which is a level:
 
 - **`injected`** — entries that were shipped by the client's serializer **and**
   retracted cleanly. This is the success counter, and the only positive evidence
   the feature did anything.
-- **`busy`** — skipped because the ring was not drained (`read != write`).
-  **Expected and correct, not an error.** The agent only injects into an empty
-  ring, because the serializer ships the entry at the *read* head: injecting
-  behind a pending entry would ship the user's click instead of the agent's and
-  then consume theirs. The ring is non-empty exactly when the user is clicking,
-  which is already resetting the timer the injection exists to reset.
-- **`not_ready`** — skipped because the client was not in-game, the connection
-  was down, or the ring could not be resolved. Not an error either.
+- **`busy`** — skipped because the ring was not drained (`read != write`). This
+  is the correct behaviour when the user is clicking: the agent only injects
+  into an empty ring, because the serializer ships the entry at the *read* head,
+  so injecting behind a pending entry would ship the user's click instead of the
+  agent's and then consume theirs. **But a sustained non-zero rate on an idle
+  client is itself an alarm.** This agent's whole premise is that the user is
+  idle, so if `busy` keeps climbing with nobody at the keyboard, the client has
+  stopped draining the ring — the AFK-logout condition returning by another route.
+- **`not_in_world`** — skipped because the client was not in-game or the
+  connection was down. Expected, and dominant at the lobby.
+- **`no_ring`** — the agent was in-world at state 30 with the connection up and
+  the ring still would not resolve. **A fault**, kept separate from
+  `not_in_world` on purpose: folded together, the expected population would bury
+  it.
 - **`lost_claim`** — the agent's atomic claim on a ring slot lost to a genuine
   click. Nothing was written.
 - **`collided`** — after shipping, the entry at the read head was **not** the
@@ -601,40 +607,66 @@ only by agent reload:
   consuming it would swallow a real click. The cost is that the packet shipped
   was a duplicate of the user's own click.
 - **`raced`** — the ring's write head moved *at all* during the agent's window,
-  **including when the retract then succeeded**. This is the one most easily
-  misread as a fault; see the note below before acting on it.
+  **including when the retract then succeeded**. See the note below before
+  acting on this one.
 - **`no_ship`** — the serializer could not be called (null vtable or slot). The
   entry was still retracted, but nothing went on the wire.
+- **`pending`** — entries left in the ring immediately after the most recent
+  attempt, `(write - read) mod capacity`. A level, not a cumulative count, and
+  the only one that is not monotonic. **A correct retract leaves this at 0**, so
+  it is the direct check that the retract worked rather than an inference from a
+  later injection succeeding.
 
 **`collided` and `raced` are different facts, and a consumer that watches only
 one of them will draw the wrong conclusion about how often the race is live.**
 
 - `collided` is a *detection*: the agent saw a genuine writer take its slot and
   correctly declined to retract.
-- `raced` is *exposure*: the head moved inside the window. That includes the
-  mirror interleaving — the agent's own fill landing after the genuine one, so
-  the timestamp still matches and the retract succeeds — which **no state the
-  agent can read distinguishes from the benign case**. `raced` exists precisely
-  because that ambiguity is real and cannot be resolved from inside the agent.
+- `raced` is *exposure*: the head moved inside the window, and **the agent
+  cannot tell which side of the race the entry landed on.**
 
-So `raced` is **not an error count**. It can advance while `injected` advances
-and every other counter stays zero, and that is a healthy reading: it means a
-real click overlapped the window and the sequence still completed. Treat
-`injected` as the health signal, `collided` / `lost_claim` / `no_ship` as faults,
-`busy` / `not_ready` as ordinary skips, and `raced` as a rate to watch rather
-than a number to alarm on.
+**A non-zero `raced` is unresolved exposure, not a clean bill of health.** It is
+the rate to argue about, and it is the only signal that a torn genuine entry may
+be pending.
+
+That wording is deliberate, because the failure it covers is worse than a lost
+telemetry entry. The client's own writer **re-reads the ring's write head before
+every one of its six field stores and never caches the slot.** So a head change
+landing mid-writer does not merely race the entry — it **tears it across two
+slots**: the button id goes to the old slot and the remaining five fields to the
+new one. What is left pending is an entry with a **real coordinate and a stale
+button id**, which the game then consumes. The counters in that case read
+`raced: 1, injected: 1` with everything else zero — **indistinguishable from the
+benign interleaving.**
+
+So: treat `injected` as the health signal; `collided`, `lost_claim`, `no_ring`
+and `no_ship` as faults; `not_in_world` as an ordinary skip; `busy` as ordinary
+*unless* it is sustained on an idle client; and `raced` as a rate meaning "the
+race was live and the outcome is unknown". Do not read a non-zero `raced` with a
+clean `collided` as evidence that nothing went wrong.
 
 `_debug.inject_click({x, y, scale_milli?})` drives one injection with
 caller-supplied coordinates and answers `{accepted: bool}` (whether the work was
 queued onto the game thread). `scale_milli` is the client-pixel to
 interface-space factor times 1000, default 1000.
 
-**It bypasses the world-to-screen projection and nothing else.** Everything after
-that point is the production path verbatim — the same pending-click slot, the
-same game-thread pump running after the client's own tick, the same injection,
-serialization and retraction. It is not a test-only reimplementation, and a
-scenario built on it exercises the real mechanism; only the choice of coordinate
-is synthetic. The coordinates are supplied rather than projected so that a test
+**It bypasses the world-to-screen projection and the action-queue gates;
+everything after `QueueActionClick` is the production path verbatim** — the same
+pending-click slot, the same game-thread pump running after the client's own
+tick, the same injection, serialization and retraction. It is not a test-only
+reimplementation, and a scenario built on it exercises the real mechanism.
+
+The gates it skips are worth naming: production reaches that point only through
+the action queue's own tick, which additionally requires a non-empty queue, no
+active break, the queue not blocked, and the dispatch itself to have succeeded.
+**Notably this will inject during a scheduled break**, which the real path never
+does.
+
+`x` and `y` are **required**. They are not defaulted, because the client's
+reader clamps anything `<= 0` to `0` — so an omitted coordinate would produce a
+click at `(0, 0)` with no error, precisely the symptom this mechanism exists to
+remove. Omitting either answers
+`{accepted: false, error: "x_and_y_required"}`. The coordinates are supplied rather than projected so that a test
 cannot fail for an unrelated reason: a target that projects behind the camera is
 *correctly* suppressed by the production policy, which would make a projection-
 driven assertion flaky rather than meaningful.
