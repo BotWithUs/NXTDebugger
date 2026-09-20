@@ -179,44 +179,86 @@ void PlayersTab(const nxt::ipc::Snapshot &s)
     ImGui::EndTable();
 }
 
+// The base id a loc row publishes: a combined section carries it in typeId, a
+// direct LOCATION in interactId. Every consumer of this wire makes the same
+// pick, and it is what the Morph column is judged against.
+int32_t LocBaseId(const nxt::ipc::LocationEntry &l)
+{
+    const bool section = (l.flags & nxt::ipc::kLocFlagCombinedSection) != 0;
+    return section ? l.typeId : l.interactId;
+}
+
+// Only the rows the producer actually transformed earn ink in the Morph column.
+// On everything else resolvedId equals the base id by contract, so printing it
+// would be a column of repeats hiding the few rows that matter.
+void DrawMorphCell(const nxt::ipc::LocationEntry &l)
+{
+    if (LocBaseId(l) > 0 && l.resolvedId != LocBaseId(l))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kInfo));
+        ImGui::Text("%d", l.resolvedId);
+        ImGui::PopStyleColor();
+    }
+    else
+    {
+        ImGui::TextDisabled("—");
+    }
+}
+
+void DrawLocRow(app::App &a, const nxt::ipc::LocationEntry &l)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
+    ImGui::Text("%d", l.typeId);
+    ImGui::PopStyleColor();
+
+    ImGui::TableSetColumnIndex(1);
+    DrawMorphCell(l);
+
+    // Named off resolvedId, never the base: a morph loc's base definition has an
+    // empty name, which is the whole reason v20 publishes the resolved id.
+    ImGui::TableSetColumnIndex(2);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
+    ImGui::TextUnformatted(CacheName(a, "loc", l.resolvedId).c_str());
+    ImGui::PopStyleColor();
+
+    ImGui::TableSetColumnIndex(3); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
+    ImGui::TableSetColumnIndex(4); ImGui::Text("%u", unsigned(l.shape));
+    ImGui::TableSetColumnIndex(5); ImGui::Text("%u", unsigned(l.rotation));
+    ImGui::TableSetColumnIndex(6); IntOrDash(l.animationId);
+    ImGui::TableSetColumnIndex(7); IntOrDash(l.interactId);
+    ImGui::TableSetColumnIndex(8);
+    if (l.flags & nxt::ipc::kLocFlagHidden)          theme::Pill("hidden",  theme::kBad);
+    if (l.flags & nxt::ipc::kLocFlagCombinedSection) theme::Pill("section", theme::kInfo);
+    if (l.flags & nxt::ipc::kLocFlagDeleted)         theme::Pill("deleted", theme::kBad);
+}
+
 void LocsTab(app::App &a, const nxt::ipc::Snapshot &s)
 {
     static FilterBuf fb;
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("locs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("locs", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                     | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Type", "Name", "Tile", "Shape", "Rot", "Anim", "Interact", "Flags" };
-    TableHeader(cols, 8);
+    const char *cols[] = { "Type", "Morph", "Name", "Tile", "Shape", "Rot",
+                           "Anim", "Interact", "Flags" };
+    TableHeader(cols, 9);
 
     for (uint32_t i = 0; i < s.locationCount; ++i)
     {
         const auto &l = s.locations[i];
-        std::snprintf(buf, sizeof(buf), "%d %d %d", l.typeId, l.tileX, l.tileY);
+        // Filter on both ids, so a search for the resolved id finds the row the
+        // producer published under its base id.
+        std::snprintf(buf, sizeof(buf), "%d %d %d %d",
+                      l.typeId, l.resolvedId, l.tileX, l.tileY);
         if (!fb.Match(fb.text, buf)) continue;
 
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kAccent));
-        ImGui::Text("%d", l.typeId);
-        ImGui::PopStyleColor();
-        ImGui::TableSetColumnIndex(1);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-        ImGui::TextUnformatted(CacheName(a, "loc", l.typeId).c_str());
-        ImGui::PopStyleColor();
-        ImGui::TableSetColumnIndex(2); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
-        ImGui::TableSetColumnIndex(3); ImGui::Text("%u", unsigned(l.shape));
-        ImGui::TableSetColumnIndex(4); ImGui::Text("%u", unsigned(l.rotation));
-        ImGui::TableSetColumnIndex(5); IntOrDash(l.animationId);
-        ImGui::TableSetColumnIndex(6); IntOrDash(l.interactId);
-        ImGui::TableSetColumnIndex(7);
-        if (l.flags & nxt::ipc::kLocFlagHidden)          theme::Pill("hidden",  theme::kBad);
-        if (l.flags & nxt::ipc::kLocFlagCombinedSection) theme::Pill("section", theme::kInfo);
-        if (l.flags & nxt::ipc::kLocFlagDeleted)         theme::Pill("deleted", theme::kBad);
+        DrawLocRow(a, l);
     }
     ImGui::EndTable();
 }

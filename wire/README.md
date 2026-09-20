@@ -46,7 +46,7 @@ move between versions and there is no forward compatibility. This project pins
 it at compile time in `src/attach/Session.h`:
 
 ```cpp
-static_assert(nxt::ipc::kProtocolVersion == 19, ...);
+static_assert(nxt::ipc::kProtocolVersion == 20, ...);
 ```
 
 so a schema bump that lands here without a matching consumer update is a build

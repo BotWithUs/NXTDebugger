@@ -160,6 +160,7 @@ void BuildDefaultLayout(ImGuiID dockId)
     ImGui::DockBuilderDockWindow("Inventory",     center);
     ImGui::DockBuilderDockWindow("Cache Browser", center);
     ImGui::DockBuilderDockWindow("CS2 script",    center);
+    ImGui::DockBuilderDockWindow("Debug Draw",    center);
 
     // Right — live inspectors.
     ImGui::DockBuilderDockWindow("Player",         right);
@@ -258,6 +259,7 @@ void App::Init()
         { "Interfaces",   false, &panels::DrawInterfacePanel    },
         { "Var Watcher",  false, &panels::DrawVarWatcher        },
         { "Session",      false, &panels::DrawSessionHealth     },
+        { "Debug Draw",   false, &panels::DrawDebugDraw         },
         { "Log",          false, &panels::DrawLogPanel          },
     };
     ApplyDefaultVisibility(*this);

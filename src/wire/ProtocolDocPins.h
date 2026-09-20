@@ -31,9 +31,9 @@ namespace nxt::ipc
 {
 
 // --- PROTOCOL.md §2.2 geometry ---
-static_assert(kProtocolVersion == 19);
+static_assert(kProtocolVersion == 20);
 static_assert(sizeof(SharedHeader) == 64);
-static_assert(sizeof(Snapshot) == 365744);
+static_assert(sizeof(Snapshot) == 398512);
 
 // --- PROTOCOL.md §2.3 SharedHeader ---
 static_assert(offsetof(SharedHeader, magic) == 0);
@@ -61,21 +61,21 @@ static_assert(offsetof(Snapshot, playerCount) == 37444);
 static_assert(offsetof(Snapshot, players) == 37448);
 static_assert(offsetof(Snapshot, locationCount) == 94792);
 static_assert(offsetof(Snapshot, locations) == 94796);
-static_assert(offsetof(Snapshot, inventoryCount) == 258640);
-static_assert(offsetof(Snapshot, inventories) == 258644);
-static_assert(offsetof(Snapshot, invItemCount) == 258900);
-static_assert(offsetof(Snapshot, invItems) == 258904);
-static_assert(offsetof(Snapshot, producer) == 275288);
-static_assert(offsetof(Snapshot, openIfaceCount) == 275320);
-static_assert(offsetof(Snapshot, openIfaces) == 275324);
-static_assert(offsetof(Snapshot, groundItemCount) == 275580);
-static_assert(offsetof(Snapshot, groundItems) == 275584);
-static_assert(offsetof(Snapshot, projectileCount) == 291968);
-static_assert(offsetof(Snapshot, projectiles) == 291972);
-static_assert(offsetof(Snapshot, gameCycle) == 300164);
-static_assert(offsetof(Snapshot, dynRegion) == 300168);
-static_assert(offsetof(Snapshot, dynChunkCount) == 300204);
-static_assert(offsetof(Snapshot, dynChunks) == 300208);
+static_assert(offsetof(Snapshot, inventoryCount) == 291408);
+static_assert(offsetof(Snapshot, inventories) == 291412);
+static_assert(offsetof(Snapshot, invItemCount) == 291668);
+static_assert(offsetof(Snapshot, invItems) == 291672);
+static_assert(offsetof(Snapshot, producer) == 308056);
+static_assert(offsetof(Snapshot, openIfaceCount) == 308088);
+static_assert(offsetof(Snapshot, openIfaces) == 308092);
+static_assert(offsetof(Snapshot, groundItemCount) == 308348);
+static_assert(offsetof(Snapshot, groundItems) == 308352);
+static_assert(offsetof(Snapshot, projectileCount) == 324736);
+static_assert(offsetof(Snapshot, projectiles) == 324740);
+static_assert(offsetof(Snapshot, gameCycle) == 332932);
+static_assert(offsetof(Snapshot, dynRegion) == 332936);
+static_assert(offsetof(Snapshot, dynChunkCount) == 332972);
+static_assert(offsetof(Snapshot, dynChunks) == 332976);
 
 // --- PROTOCOL.md §2.7 LocalPlayer ---
 static_assert(sizeof(LocalPlayer) == 552);
@@ -120,7 +120,7 @@ static_assert(offsetof(PlayerEntry, animationId) == 12);
 static_assert(offsetof(PlayerEntry, stanceId) == 16);
 static_assert(offsetof(PlayerEntry, combatLevel) == 20);
 static_assert(offsetof(PlayerEntry, spotAnimId) == 24);
-static_assert(sizeof(LocationEntry) == 20);
+static_assert(sizeof(LocationEntry) == 24);
 static_assert(offsetof(LocationEntry, typeId) == 0);
 static_assert(offsetof(LocationEntry, interactId) == 4);
 static_assert(offsetof(LocationEntry, animationId) == 8);
@@ -130,6 +130,7 @@ static_assert(offsetof(LocationEntry, plane) == 16);
 static_assert(offsetof(LocationEntry, shape) == 17);
 static_assert(offsetof(LocationEntry, rotation) == 18);
 static_assert(offsetof(LocationEntry, flags) == 19);
+static_assert(offsetof(LocationEntry, resolvedId) == 20);
 static_assert(sizeof(GroundItemEntry) == 16);
 static_assert(offsetof(GroundItemEntry, itemId) == 0);
 static_assert(offsetof(GroundItemEntry, quantity) == 4);
@@ -198,12 +199,12 @@ static_assert(sizeof(ChatMessageBody) == 112);
 // The doc prints these as a table of absolute byte figures; the header derives
 // them, so this is where the two are held equal.
 static_assert(kMagic           == 0x5354584Eu);
-static_assert(kSnapshotStride  == 365760);   // sizeof(Snapshot) padded to 64B
+static_assert(kSnapshotStride  == 398528);   // sizeof(Snapshot) padded to 64B
 static_assert(kSnapshotOff0    == 64);
-static_assert(kSnapshotOff1    == 365824);
-static_assert(kRingOff         == 731584);
+static_assert(kSnapshotOff1    == 398592);
+static_assert(kRingOff         == 797120);
 static_assert(kRingStride      == 131136);   // "Event ring size (padded)"
-static_assert(kRegionSize      == 862720);   // "Total region size"
+static_assert(kRegionSize      == 928256);   // "Total region size"
 
 // --- PROTOCOL.md §3.1 event ring layout ---
 static_assert(kEventRingSlots  == 1024);     // EventRing.slotCount
