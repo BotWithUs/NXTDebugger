@@ -224,12 +224,33 @@ Tile coordinates are **absolute world tiles**. `plane` is 0..3.
   (`tileX == -1`), the read failed, or the local player is not in the world.
   Test `orientation != 0xFFFF`. **Never** infer it from `tileX`: the
   out-of-world `LocalPlayer` block is zero-filled, so its `tileX` reads `0`.
-- **Units.** A raw client angle, **16384 units per full turn**, published exactly
-  as the client holds it (no rescale).
-- **Meaning.** RE-PENDING — what the field measures (the model's current,
-  rendered facing is the requirement), which compass direction `0` is, which way
-  the value increases, and the canonical degrees/compass formula with a worked
-  N/E/S/W table. Do not bind a compass mapping until this paragraph is filled.
+- **What it measures.** The entity model's **current, rendered** facing: the
+  rotation quaternion on its scene node, not the goal of a turn in progress and
+  not a movement direction. The producer converts it with the client's own
+  arithmetic, operation for operation, so the value is what the client itself
+  would compute.
+- **Units.** The client's 14-bit angle: **16384 units per full turn**, no rescale.
+- **Convention** (from static analysis of client build 950-1; **STATIC, pending a
+  live check**): `0` = south, `4096` = west, `8192` = north, `12288` = east —
+  increasing **clockwise seen from above** with north (`+tileY`) up.
+- **Compass degrees** (0 = north, 90 = east), with a non-negative `mod`:
+  `compassDeg = ((raw - 8192) mod 16384) * 360 / 16384`
+
+  | raw | compassDeg | direction |
+  |---:|---:|---|
+  | 8192 | 0 | N |
+  | 10240 | 45 | NE |
+  | 12288 | 90 | E |
+  | 14336 | 135 | SE |
+  | 0 | 180 | S |
+  | 2048 | 225 | SW |
+  | 4096 | 270 | W |
+  | 6144 | 315 | NW |
+
+  To bucket into eight directions: `round(compassDeg / 45) mod 8`.
+- **Precision.** The client's conversion truncates, so a facing set from a
+  server angle `j` can read back as `j - 1`. Compare with a tolerance of one
+  unit, not for equality.
 - **Self vs `players[]`.** `LocalPlayer.orientation` is read once per publish and
   the `players[]` row whose `serverIndex == ownIndex` copies it, so the two are
   byte-identical in every publish. Read either; `LocalPlayer` is authoritative.
@@ -581,7 +602,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `move_stats`, `_debug.inject_click` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
-| Scene queries | `query_spot_anims`, `query_world_map_elements` |
+| Scene queries | `query_spot_anims`, `query_world_map_elements`, `_debug.entity_facing` |
 | Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component`, `highlight_entity`, `highlight_tile`, `highlight_area` |
 
 Four gaps worth knowing before you design around them:
@@ -614,6 +635,16 @@ Four gaps worth knowing before you design around them:
   capped at 256 rows. Graphics playing *on* an NPC or player are not in that
   list — read those from `spotAnimId` on the snapshot's entity rows, or from
   event type 72 (§2.8).
+- **`_debug.entity_facing` is a diagnostic, not a data source.** It exists to
+  check the snapshot's `orientation` (§2.8, **v21+**) against the game: in one
+  game-thread pass it reads the raw scene-node rotation quaternion and the
+  unmasked converted units for the local player and the first 32 loaded NPCs.
+  No params. Reply: `{in_world, self: row | nil, npcs: [row]}` with
+  `row = {index, tile_x, tile_y, has_quat, qx, qy, qz, qw, known, units}`;
+  `units` is `0..16384` when `known` (the snapshot publishes `units & 0x3FFF`)
+  and `-1` otherwise, and the `q*` fields are `0` when `has_quat` is false.
+  Outside the world it answers `{in_world: false, self: nil, npcs: []}`. Read
+  facing from the snapshot, not from this.
 
 #### Click telemetry — `click_stats` and `_debug.inject_click`
 

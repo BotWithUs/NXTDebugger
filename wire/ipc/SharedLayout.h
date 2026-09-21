@@ -164,11 +164,22 @@ inline constexpr uint32_t kDynChunkCap = 16384;
 // `orientation != kOrientationUnknown`; never infer it from tileX, because the
 // out-of-world self block is zero-filled, not -1-filled.
 //
-// Units: raw client angle, kOrientationUnitsPerTurn per full turn, published
-// exactly as the client holds it -- no rescale.
-// RE-PENDING: source field, what 0 means, and which direction is positive.
-// This comment is completed from the reverse-engineering result before the
-// change ships; do not bind a compass mapping to it until then.
+// What it measures: the entity model's CURRENT (rendered) facing -- the
+// GraphNode rotation quaternion, not the goal of a turn in progress and not a
+// movement direction -- converted with the client's own arithmetic
+// (game/EntityFacing.h) into the client's 14-bit angle:
+// kOrientationUnitsPerTurn (16384) units per full turn, no rescale.
+//
+// Convention (from static analysis of 950-1; STATIC, pending a live check):
+//   0 = south, 4096 = west, 8192 = north, 12288 = east -- increasing
+//   clockwise seen from above with north (+tileY) up.
+// Compass degrees (0 = north, 90 = east):
+//   compassDeg = ((raw - 8192) mod 16384) * 360 / 16384
+// with a non-negative mod. Worked: 8192 -> 0 (N), 10240 -> 45 (NE),
+// 12288 -> 90 (E), 14336 -> 135 (SE), 0 -> 180 (S), 2048 -> 225 (SW),
+// 4096 -> 270 (W), 6144 -> 315 (NW).
+// The client's conversion truncates, so a facing set from server angle j can
+// read back as j - 1; compare with a tolerance of one unit, not for equality.
 inline constexpr uint16_t kOrientationUnknown      = 0xFFFFu;
 inline constexpr uint16_t kOrientationMask         = 0x3FFFu;
 inline constexpr uint32_t kOrientationUnitsPerTurn = 16384u;
@@ -239,8 +250,13 @@ struct SkillEntry {
 static_assert(sizeof(SkillEntry) == 16);
 static_assert(alignof(SkillEntry) == 4);
 
-// Self-state block. Populated only when gameState == 30 and the local player
-// has resolved; zeroed otherwise (serverIndex == -1 means "no local player").
+// Self-state block. Valid only when Snapshot::ownIndex >= 0, which the
+// producer sets only in the world (gameState == 30 with a resolved logged-in
+// player). Otherwise the block is zero-filled -- so serverIndex reads 0, not
+// -1, and must not be used as the validity test -- with one exception:
+// orientation holds kOrientationUnknown (0xFFFF), because a zero there would
+// read as a valid facing. In the world, a self whose scene entity has not
+// resolved yet reports tileX/tileY/plane == -1 and orientation == 0xFFFF.
 struct LocalPlayer {
     int32_t  serverIndex;     // 0   matches Snapshot::ownIndex when in-world
     int32_t  combatLevel;     // 4
