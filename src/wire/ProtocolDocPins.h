@@ -31,9 +31,9 @@ namespace nxt::ipc
 {
 
 // --- PROTOCOL.md §2.2 geometry ---
-static_assert(kProtocolVersion == 20);
+static_assert(kProtocolVersion == 21);
 static_assert(sizeof(SharedHeader) == 64);
-static_assert(sizeof(Snapshot) == 398512);
+static_assert(sizeof(Snapshot) == 410800);
 
 // --- PROTOCOL.md §2.3 SharedHeader ---
 static_assert(offsetof(SharedHeader, magic) == 0);
@@ -57,25 +57,25 @@ static_assert(offsetof(Snapshot, serverTick) == 20);
 static_assert(offsetof(Snapshot, self) == 24);
 static_assert(offsetof(Snapshot, npcCount) == 576);
 static_assert(offsetof(Snapshot, npcs) == 580);
-static_assert(offsetof(Snapshot, playerCount) == 37444);
-static_assert(offsetof(Snapshot, players) == 37448);
-static_assert(offsetof(Snapshot, locationCount) == 94792);
-static_assert(offsetof(Snapshot, locations) == 94796);
-static_assert(offsetof(Snapshot, inventoryCount) == 291408);
-static_assert(offsetof(Snapshot, inventories) == 291412);
-static_assert(offsetof(Snapshot, invItemCount) == 291668);
-static_assert(offsetof(Snapshot, invItems) == 291672);
-static_assert(offsetof(Snapshot, producer) == 308056);
-static_assert(offsetof(Snapshot, openIfaceCount) == 308088);
-static_assert(offsetof(Snapshot, openIfaces) == 308092);
-static_assert(offsetof(Snapshot, groundItemCount) == 308348);
-static_assert(offsetof(Snapshot, groundItems) == 308352);
-static_assert(offsetof(Snapshot, projectileCount) == 324736);
-static_assert(offsetof(Snapshot, projectiles) == 324740);
-static_assert(offsetof(Snapshot, gameCycle) == 332932);
-static_assert(offsetof(Snapshot, dynRegion) == 332936);
-static_assert(offsetof(Snapshot, dynChunkCount) == 332972);
-static_assert(offsetof(Snapshot, dynChunks) == 332976);
+static_assert(offsetof(Snapshot, playerCount) == 41540);
+static_assert(offsetof(Snapshot, players) == 41544);
+static_assert(offsetof(Snapshot, locationCount) == 107080);
+static_assert(offsetof(Snapshot, locations) == 107084);
+static_assert(offsetof(Snapshot, inventoryCount) == 303696);
+static_assert(offsetof(Snapshot, inventories) == 303700);
+static_assert(offsetof(Snapshot, invItemCount) == 303956);
+static_assert(offsetof(Snapshot, invItems) == 303960);
+static_assert(offsetof(Snapshot, producer) == 320344);
+static_assert(offsetof(Snapshot, openIfaceCount) == 320376);
+static_assert(offsetof(Snapshot, openIfaces) == 320380);
+static_assert(offsetof(Snapshot, groundItemCount) == 320636);
+static_assert(offsetof(Snapshot, groundItems) == 320640);
+static_assert(offsetof(Snapshot, projectileCount) == 337024);
+static_assert(offsetof(Snapshot, projectiles) == 337028);
+static_assert(offsetof(Snapshot, gameCycle) == 345220);
+static_assert(offsetof(Snapshot, dynRegion) == 345224);
+static_assert(offsetof(Snapshot, dynChunkCount) == 345260);
+static_assert(offsetof(Snapshot, dynChunks) == 345264);
 
 // --- PROTOCOL.md §2.7 LocalPlayer ---
 static_assert(sizeof(LocalPlayer) == 552);
@@ -92,11 +92,17 @@ static_assert(offsetof(LocalPlayer, targetIndex) == 24);
 static_assert(offsetof(LocalPlayer, targetType) == 26);
 static_assert(offsetof(LocalPlayer, isMember) == 27);
 static_assert(offsetof(LocalPlayer, spotAnimId) == 28);
+static_assert(offsetof(LocalPlayer, orientation) == 32);
+static_assert(offsetof(LocalPlayer, _orientationPad) == 34);
 static_assert(offsetof(LocalPlayer, skillCount) == 36);
 static_assert(offsetof(LocalPlayer, skills) == 40);
 
 // --- PROTOCOL.md §2.8 entries ---
-static_assert(sizeof(NpcEntry) == 36);
+// Orientation value domain (§2.8 "Entity orientation").
+static_assert(kOrientationUnknown == 0xFFFFu);
+static_assert(kOrientationMask == 0x3FFFu);
+static_assert(kOrientationUnitsPerTurn == 16384u);
+static_assert(sizeof(NpcEntry) == 40);
 static_assert(offsetof(NpcEntry, serverIndex) == 0);
 static_assert(offsetof(NpcEntry, typeId) == 4);
 static_assert(offsetof(NpcEntry, tileX) == 8);
@@ -109,7 +115,8 @@ static_assert(offsetof(NpcEntry, stanceId) == 20);
 static_assert(offsetof(NpcEntry, hp) == 24);
 static_assert(offsetof(NpcEntry, maxHp) == 28);
 static_assert(offsetof(NpcEntry, spotAnimId) == 32);
-static_assert(sizeof(PlayerEntry) == 28);
+static_assert(offsetof(NpcEntry, orientation) == 36);
+static_assert(sizeof(PlayerEntry) == 32);
 static_assert(offsetof(PlayerEntry, serverIndex) == 0);
 static_assert(offsetof(PlayerEntry, tileX) == 4);
 static_assert(offsetof(PlayerEntry, tileY) == 6);
@@ -120,6 +127,7 @@ static_assert(offsetof(PlayerEntry, animationId) == 12);
 static_assert(offsetof(PlayerEntry, stanceId) == 16);
 static_assert(offsetof(PlayerEntry, combatLevel) == 20);
 static_assert(offsetof(PlayerEntry, spotAnimId) == 24);
+static_assert(offsetof(PlayerEntry, orientation) == 28);
 static_assert(sizeof(LocationEntry) == 24);
 static_assert(offsetof(LocationEntry, typeId) == 0);
 static_assert(offsetof(LocationEntry, interactId) == 4);
@@ -199,12 +207,12 @@ static_assert(sizeof(ChatMessageBody) == 112);
 // The doc prints these as a table of absolute byte figures; the header derives
 // them, so this is where the two are held equal.
 static_assert(kMagic           == 0x5354584Eu);
-static_assert(kSnapshotStride  == 398528);   // sizeof(Snapshot) padded to 64B
+static_assert(kSnapshotStride  == 410816);   // sizeof(Snapshot) padded to 64B
 static_assert(kSnapshotOff0    == 64);
-static_assert(kSnapshotOff1    == 398592);
-static_assert(kRingOff         == 797120);
+static_assert(kSnapshotOff1    == 410880);
+static_assert(kRingOff         == 821696);
 static_assert(kRingStride      == 131136);   // "Event ring size (padded)"
-static_assert(kRegionSize      == 928256);   // "Total region size"
+static_assert(kRegionSize      == 952832);   // "Total region size"
 
 // --- PROTOCOL.md §3.1 event ring layout ---
 static_assert(kEventRingSlots  == 1024);     // EventRing.slotCount

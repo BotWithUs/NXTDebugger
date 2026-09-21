@@ -1,4 +1,4 @@
-# BotWithUs agent wire protocol — v20
+# BotWithUs agent wire protocol — v21
 
 How to read live RuneScape 3 state out of the BotWithUs agent, and how to drive
 it, from **any language**. This is the normative description of the bytes; the
@@ -29,7 +29,7 @@ every client logic step (~20ms) and costs a consumer nothing but a memory read.
 
 ## 1. Versioning
 
-`kProtocolVersion` is **20**.
+`kProtocolVersion` is **21**.
 
 - The version gates the **snapshot layout only**. Field offsets move between
   versions and there is **no forward compatibility**.
@@ -53,23 +53,23 @@ user as the client.
 Then validate, in this order:
 
 1. `magic` == `0x5354584E` (`'N','X','T','S'` LE). Wrong magic → not our region.
-2. `version` == `20`. Mismatch → refuse (see §1).
-3. `headerSize` == 64 and `snapshotSize` == 398512 as a sanity check.
+2. `version` == `21`. Mismatch → refuse (see §1).
+3. `headerSize` == 64 and `snapshotSize` == 410800 as a sanity check.
 
 ### 2.2 Region geometry
 
 | Constant | Value |
 |---|---|
 | `kMagic` | `0x5354584E` |
-| `kProtocolVersion` | 20 |
+| `kProtocolVersion` | 21 |
 | `sizeof(SharedHeader)` | 64 |
-| `sizeof(Snapshot)` | 398512 |
-| snapshot stride (padded to 64B) | 398528 |
+| `sizeof(Snapshot)` | 410800 |
+| snapshot stride (padded to 64B) | 410816 |
 | Snapshot[0] offset | 64 |
-| Snapshot[1] offset | 398592 |
-| Event ring offset | 797120 |
+| Snapshot[1] offset | 410880 |
+| Event ring offset | 821696 |
 | Event ring size (padded) | 131136 |
-| Total region size | 928256 |
+| Total region size | 952832 |
 
 Do not hardcode these blindly — the header carries `snapshotOff0`,
 `snapshotOff1`, `ringOff` and `ringSize` for exactly this reason. Prefer reading
@@ -80,10 +80,10 @@ them.
 | field | off | size | notes |
 |---|---|---|---|
 | `magic` | 0 | 4 | `'N','X','T','S'` |
-| `version` | 4 | 4 | == 20 |
+| `version` | 4 | 4 | == 21 |
 | `headerSize` | 8 | 4 | == 64 |
 | `layoutId` | 12 | 4 | reserved, 0 |
-| `snapshotSize` | 16 | 4 | == 398512 |
+| `snapshotSize` | 16 | 4 | == 410800 |
 | `snapshotOff0` | 20 | 4 | byte offset of buffer 0 |
 | `snapshotOff1` | 24 | 4 | byte offset of buffer 1 |
 | `ringOff` | 28 | 4 | byte offset of the event ring |
@@ -100,7 +100,7 @@ that reads the front buffer races with nothing.
 ```
 idx  = atomic_load_acquire(header.frontIdx)     // 0 or 1
 base = (idx == 0) ? header.snapshotOff0 : header.snapshotOff1
-copy 398512 bytes from mapping[base]            // then parse the copy
+copy 410800 bytes from mapping[base]            // then parse the copy
 ```
 
 Two rules that matter:
@@ -116,7 +116,7 @@ Two rules that matter:
 There is no reader registration and no backpressure — the producer never waits
 for you.
 
-### 2.5 `Snapshot` (398512 bytes)
+### 2.5 `Snapshot` (410800 bytes)
 
 | field | off | size | notes |
 |---|---|---|---|
@@ -127,26 +127,26 @@ for you.
 | `serverTick` | 20 | 4 | **600ms server tick — pace on this**, see §2.6 |
 | `self` | 24 | 552 | `LocalPlayer`, §2.7 |
 | `npcCount` | 576 | 4 | |
-| `npcs` | 580 | 36864 | `NpcEntry[1024]`, stride 36 |
-| `playerCount` | 37444 | 4 | |
-| `players` | 37448 | 57344 | `PlayerEntry[2048]`, stride 28 |
-| `locationCount` | 94792 | 4 | |
-| `locations` | 94796 | 196608 | `LocationEntry[8192]`, stride 24 |
-| `inventoryCount` | 291408 | 4 | |
-| `inventories` | 291412 | 256 | `InventoryHeader[32]`, stride 8 |
-| `invItemCount` | 291668 | 4 | |
-| `invItems` | 291672 | 16384 | `InventoryItem[2048]`, stride 8 |
-| `producer` | 308056 | 32 | `ProducerState`, §2.9 |
-| `openIfaceCount` | 308088 | 4 | |
-| `openIfaces` | 308092 | 256 | `int32[64]` — open sub-interface ids |
-| `groundItemCount` | 308348 | 4 | |
-| `groundItems` | 308352 | 16384 | `GroundItemEntry[1024]`, stride 16 |
-| `projectileCount` | 324736 | 4 | |
-| `projectiles` | 324740 | 8192 | `ProjectileEntry[256]`, stride 32 |
-| `gameCycle` | 332932 | 4 | **~20ms client cycle**, see §2.6 |
-| `dynRegion` | 332936 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
-| `dynChunkCount` | 332972 | 4 | |
-| `dynChunks` | 332976 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
+| `npcs` | 580 | 40960 | `NpcEntry[1024]`, stride 40 |
+| `playerCount` | 41540 | 4 | |
+| `players` | 41544 | 65536 | `PlayerEntry[2048]`, stride 32 |
+| `locationCount` | 107080 | 4 | |
+| `locations` | 107084 | 196608 | `LocationEntry[8192]`, stride 24 |
+| `inventoryCount` | 303696 | 4 | |
+| `inventories` | 303700 | 256 | `InventoryHeader[32]`, stride 8 |
+| `invItemCount` | 303956 | 4 | |
+| `invItems` | 303960 | 16384 | `InventoryItem[2048]`, stride 8 |
+| `producer` | 320344 | 32 | `ProducerState`, §2.9 |
+| `openIfaceCount` | 320376 | 4 | |
+| `openIfaces` | 320380 | 256 | `int32[64]` — open sub-interface ids |
+| `groundItemCount` | 320636 | 4 | |
+| `groundItems` | 320640 | 16384 | `GroundItemEntry[1024]`, stride 16 |
+| `projectileCount` | 337024 | 4 | |
+| `projectiles` | 337028 | 8192 | `ProjectileEntry[256]`, stride 32 |
+| `gameCycle` | 345220 | 4 | **~20ms client cycle**, see §2.6 |
+| `dynRegion` | 345224 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
+| `dynChunkCount` | 345260 | 4 | |
+| `dynChunks` | 345264 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
 
 Every `*Count` is the live entry count; **entries past it are stale and must not
 be read**. Counts saturate at the array cap and the producer truncates silently,
@@ -173,7 +173,10 @@ compare or substitute them.
 
 ### 2.7 `LocalPlayer` (552 bytes, at snapshot offset 24)
 
-Zeroed when not in-world; `serverIndex == -1` means "no local player".
+Zero-filled when not in-world — so `serverIndex` then reads `0`, not `-1`;
+test `ownIndex == -1` for "no local player". One exception: `orientation`
+holds the `0xFFFF` sentinel, because a zero there would read as a valid
+facing (§2.8, *Entity orientation*).
 
 | field | off | size |
 |---|---|---|
@@ -190,6 +193,8 @@ Zeroed when not in-world; `serverIndex == -1` means "no local player".
 | `targetType` | 26 | 1 |
 | `isMember` | 27 | 1 |
 | `spotAnimId` | 28 | 4 |
+| `orientation` | 32 | 2 | u16, **v21+**, §2.8 *Entity orientation*. Authoritative for the local player. |
+| `_orientationPad` | 34 | 2 | zero |
 | `skillCount` | 36 | 4 |
 | `skills` | 40 | 512 | `SkillEntry[32]`, stride 16 |
 
@@ -198,14 +203,36 @@ Zeroed when not in-world; `serverIndex == -1` means "no local player".
 Tile coordinates are **absolute world tiles**. `plane` is 0..3.
 `flags` bit 0 (`kFlagMoving`) is set when the entity is moving.
 
-**`NpcEntry`** (36) — `serverIndex` 0, `typeId` 4, `tileX` 8, `tileY` 10,
+**`NpcEntry`** (40) — `serverIndex` 0, `typeId` 4, `tileX` 8, `tileY` 10,
 `plane` 12, `flags` 13, `followingIndex` 14, `animationId` 16, `stanceId` 20,
-`hp` 24, `maxHp` 28, `spotAnimId` 32. `typeId` is -1 if unresolved;
+`hp` 24, `maxHp` 28, `spotAnimId` 32, `orientation` 36 (u16, **v21+**),
+`_pad0` 38 (u16, zero). `typeId` is -1 if unresolved;
 `animationId`/`spotAnimId` are -1 when inactive; `followingIndex` -1 if none.
 
-**`PlayerEntry`** (28) — `serverIndex` 0, `tileX` 4, `tileY` 6, `plane` 8,
+**`PlayerEntry`** (32) — `serverIndex` 0, `tileX` 4, `tileY` 6, `plane` 8,
 `flags` 9, `followingIndex` 10, `animationId` 12, `stanceId` 16,
-`combatLevel` 20, `spotAnimId` 24.
+`combatLevel` 20, `spotAnimId` 24, `orientation` 28 (u16, **v21+**),
+`_pad0` 30 (u16, zero).
+
+**Entity orientation** (**v21+**) — `LocalPlayer.orientation`,
+`NpcEntry.orientation` and `PlayerEntry.orientation` share one encoding.
+
+- **Value domain (producer invariant).** Every published value is either
+  `0..16383` (`0x0000..0x3FFF`) or exactly `0xFFFF`. Nothing in
+  `0x4000..0xFFFE` is ever written; treat one as a producer bug.
+- **Known vs unknown.** `0xFFFF` means unknown: the entity has no position yet
+  (`tileX == -1`), the read failed, or the local player is not in the world.
+  Test `orientation != 0xFFFF`. **Never** infer it from `tileX`: the
+  out-of-world `LocalPlayer` block is zero-filled, so its `tileX` reads `0`.
+- **Units.** A raw client angle, **16384 units per full turn**, published exactly
+  as the client holds it (no rescale).
+- **Meaning.** RE-PENDING — what the field measures (the model's current,
+  rendered facing is the requirement), which compass direction `0` is, which way
+  the value increases, and the canonical degrees/compass formula with a worked
+  N/E/S/W table. Do not bind a compass mapping until this paragraph is filled.
+- **Self vs `players[]`.** `LocalPlayer.orientation` is read once per publish and
+  the `players[]` row whose `serverIndex == ownIndex` copies it, so the two are
+  byte-identical in every publish. Read either; `LocalPlayer` is authoritative.
 
 *On `spotAnimId`*: this is the graphic playing **on** that entity, `-1` for none,
 and it is a recent arrival — through most of v19 the producer read the wrong
@@ -295,7 +322,7 @@ table, and the client stamps the scene out of 8x8-tile chunks **copied from
 static source regions**. This block publishes that table, so a consumer holding
 static map data can map an instance tile back to the tile it was copied from.
 
-`DynamicRegion` (36 bytes, at snapshot offset 332936):
+`DynamicRegion` (36 bytes, at snapshot offset 345224):
 
 | field | off | size | notes |
 |---|---|---|---|
