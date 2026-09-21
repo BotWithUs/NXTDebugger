@@ -22,6 +22,13 @@ namespace nxt::ipc {
 
 // Magic = 'N' 'X' 'T' 'S' little-endian. Consumers verify before binding.
 inline constexpr uint32_t kMagic           = 0x5354584Eu;
+// v21 added entity facing: a u16 `orientation` on NpcEntry (+36), PlayerEntry
+// (+28) and LocalPlayer (+32). NpcEntry grows 36 -> 40 and PlayerEntry 28 -> 32;
+// LocalPlayer reuses its existing 4-byte pad and keeps sizeof 552. Growing the
+// two entity rows shifts every offset past npcs[] by 4 * (kNpcCap + kPlayerCap)
+// = 12288, so sizeof(Snapshot) goes from 398512 to 410800 and this is a hard
+// version bump. Value domain and conventions are on kOrientationUnknown below.
+//
 // v20 widened LocationEntry from 20 to 24 bytes with a trailing resolvedId —
 // the loc id after the producer applies the morphvarp ("multiloc") transform.
 // Scene locs whose look and menu are chosen by a var are published by the
@@ -92,7 +99,7 @@ inline constexpr uint32_t kMagic           = 0x5354584Eu;
 // v13 dropped the per-interface ifaceVersions[] array. Interface state is now
 // read fresh on demand via the RPC handlers, so the consumer no longer caches
 // component results behind an invalidation token.
-inline constexpr uint32_t kProtocolVersion = 20;
+inline constexpr uint32_t kProtocolVersion = 21;
 
 // Caps mirror the game's own protocol caps:
 //   - NPCs: the client tracks at most 1024 loaded NPCs.
@@ -148,6 +155,37 @@ inline constexpr uint32_t kProjectileCap = 256;
 // per snapshot buffer is cheap insurance against shipping a v20 to fix it.
 inline constexpr uint32_t kDynChunkCap = 16384;
 
+// Entity facing (v21), shared by NpcEntry, PlayerEntry and LocalPlayer.
+//
+// Value domain -- a producer invariant, not a hint: every published
+// orientation is either in [0, kOrientationMask] or exactly
+// kOrientationUnknown. Nothing in 0x4000..0xFFFE is ever written, so a consumer
+// may treat such a value as a producer bug. Test "known" with
+// `orientation != kOrientationUnknown`; never infer it from tileX, because the
+// out-of-world self block is zero-filled, not -1-filled.
+//
+// What it measures: the entity model's CURRENT (rendered) facing -- the
+// GraphNode rotation quaternion, not the goal of a turn in progress and not a
+// movement direction -- converted with the client's own arithmetic
+// (game/EntityFacing.h) into the client's 14-bit angle:
+// kOrientationUnitsPerTurn (16384) units per full turn, no rescale.
+//
+// Convention (from static analysis of 950-1; STATIC, pending a live check):
+//   0 = south, 4096 = west, 8192 = north, 12288 = east -- increasing
+//   clockwise seen from above with north (+tileY) up.
+// Compass degrees (0 = north, 90 = east):
+//   compassDeg = ((raw - 8192) mod 16384) * 360 / 16384
+// with a non-negative mod. Worked: 8192 -> 0 (N), 10240 -> 45 (NE),
+// 12288 -> 90 (E), 14336 -> 135 (SE), 0 -> 180 (S), 2048 -> 225 (SW),
+// 4096 -> 270 (W), 6144 -> 315 (NW).
+// The client's conversion truncates, so a facing set from server angle j can
+// read back as j - 1; compare with a tolerance of one unit, not for equality.
+inline constexpr uint16_t kOrientationUnknown      = 0xFFFFu;
+inline constexpr uint16_t kOrientationMask         = 0x3FFFu;
+inline constexpr uint32_t kOrientationUnitsPerTurn = 16384u;
+static_assert(kOrientationMask + 1u == kOrientationUnitsPerTurn);
+static_assert(kOrientationUnknown > kOrientationMask);
+
 // Bit flags shared between NpcEntry and PlayerEntry.
 inline constexpr uint8_t kFlagMoving = 1u << 0;
 
@@ -173,8 +211,11 @@ struct NpcEntry {
     int32_t  hp;              // 24 current hitpoints
     int32_t  maxHp;           // 28 maximum hitpoints
     int32_t  spotAnimId;      // 32 first active spot anim (graphic) id; -1 if none
+    uint16_t orientation;     // 36 v21 facing; see kOrientationUnknown
+    uint16_t _pad0;           // 38 zero; keeps the row 4-aligned
 };
-static_assert(sizeof(NpcEntry) == 36);
+static_assert(offsetof(NpcEntry, orientation) == 36, "NpcEntry orientation offset");
+static_assert(sizeof(NpcEntry) == 40);
 static_assert(alignof(NpcEntry) == 4);
 
 struct PlayerEntry {
@@ -188,8 +229,12 @@ struct PlayerEntry {
     int32_t  stanceId;        // 16
     int32_t  combatLevel;     // 20  0 if the client has not resolved it yet
     int32_t  spotAnimId;      // 24  first active spot anim (graphic) id; -1 if none
+    uint16_t orientation;     // 28  v21 facing; see kOrientationUnknown. The row
+                              //     for ownIndex is a copy of self.orientation.
+    uint16_t _pad0;           // 30  zero; keeps the row 4-aligned
 };
-static_assert(sizeof(PlayerEntry) == 28);
+static_assert(offsetof(PlayerEntry, orientation) == 28, "PlayerEntry orientation offset");
+static_assert(sizeof(PlayerEntry) == 32);
 static_assert(alignof(PlayerEntry) == 4);
 
 // Per-skill snapshot: experience, the true level (max attainable, e.g. 99), and
@@ -205,8 +250,13 @@ struct SkillEntry {
 static_assert(sizeof(SkillEntry) == 16);
 static_assert(alignof(SkillEntry) == 4);
 
-// Self-state block. Populated only when gameState == 30 and the local player
-// has resolved; zeroed otherwise (serverIndex == -1 means "no local player").
+// Self-state block. Valid only when Snapshot::ownIndex >= 0, which the
+// producer sets only in the world (gameState == 30 with a resolved logged-in
+// player). Otherwise the block is zero-filled -- so serverIndex reads 0, not
+// -1, and must not be used as the validity test -- with one exception:
+// orientation holds kOrientationUnknown (0xFFFF), because a zero there would
+// read as a valid facing. In the world, a self whose scene entity has not
+// resolved yet reports tileX/tileY/plane == -1 and orientation == 0xFFFF.
 struct LocalPlayer {
     int32_t  serverIndex;     // 0   matches Snapshot::ownIndex when in-world
     int32_t  combatLevel;     // 4
@@ -227,14 +277,23 @@ struct LocalPlayer {
     // size shifts the running offset off an 8-boundary, the compiler inserts
     // implicit padding before producer that the Java side cannot see by formula
     // (it reads every downstream offset arithmetically). spotAnimId alone would
-    // make this 548 (4 mod 8); this pad restores 552. Same rationale as
-    // Snapshot::_reserved0 / _padAfterLocations. NpcEntry/PlayerEntry grow by 4
-    // each but their *arrays* stay multiples of 8, so they need no such pad.
-    uint32_t _pad0;           // 32
+    // make this 548 (4 mod 8); the 4 bytes at 32..35 restore 552. Through v20
+    // they were one u32 pad; v21 gives the first two to orientation and keeps
+    // the last two as _orientationPad, so sizeof stays 552 (0 mod 8). Same
+    // rationale as Snapshot::_reserved0 / _padAfterLocations. NpcEntry (40) and
+    // PlayerEntry (32) are themselves multiples of 8 in v21, so their arrays
+    // need no such pad.
+    uint16_t orientation;     // 32  v21 facing; see kOrientationUnknown.
+                              //     Authoritative for the local player; the
+                              //     players[] row for ownIndex copies it.
+    uint16_t _orientationPad; // 34  zero
     uint32_t   skillCount;    // 36
     SkillEntry skills[kSkillCap];  // 40; 32 * 16 = 512 → ends at 552
 };
+static_assert(offsetof(LocalPlayer, orientation) == 32, "LocalPlayer orientation offset");
 static_assert(offsetof(LocalPlayer, skills) == 40, "skills offset");
+static_assert(sizeof(LocalPlayer) == 552 && sizeof(LocalPlayer) % 8 == 0,
+              "LocalPlayer size moved; v21 reuses the pad and must not grow it");
 static_assert(sizeof(LocalPlayer) == 40 + sizeof(SkillEntry) * kSkillCap,
               "LocalPlayer has unexpected trailing padding");
 
@@ -707,17 +766,19 @@ static_assert(sizeof(Snapshot) == 68 + sizeof(DynamicRegion)
                                 + sizeof(uint32_t)        * kDynChunkCap,
               "Snapshot has unexpected trailing padding");
 
-// Absolute pins on the v20 tail. Every other assert above is expressed
+// Absolute pins on the v21 tail. Every other assert above is expressed
 // relatively, which means two simultaneous cap edits could cancel out and still
 // pass the whole chain. These two cannot — update them deliberately, never
 // mechanically, and only when the wire genuinely moved. Both moved by
-// kLocationCap * 4 in v20, which is the whole cost of LocationEntry::resolvedId
-// (was 300168 / 365744 in v19).
-static_assert(offsetof(Snapshot, dynRegion) == 332936, "v20 dynRegion offset drifted");
-// Literal, deliberately NOT written as `332976 + sizeof(uint32_t) * kDynChunkCap`
+// 4 * (kNpcCap + kPlayerCap) = 12288 in v21, which is the whole cost of the
+// NpcEntry/PlayerEntry orientation field (were 332936 / 398512 in v20, and
+// 300168 / 365744 in v19).
+static_assert(offsetof(Snapshot, players) == 41544, "v21 players offset drifted");
+static_assert(offsetof(Snapshot, dynRegion) == 345224, "v21 dynRegion offset drifted");
+// Literal, deliberately NOT written as `345264 + sizeof(uint32_t) * kDynChunkCap`
 // — that form is parameterised on the cap and would keep passing through a cap
 // change, which is exactly the drift this assert exists to catch.
-static_assert(sizeof(Snapshot) == 398512, "v20 Snapshot size drifted");
+static_assert(sizeof(Snapshot) == 410800, "v21 Snapshot size drifted");
 static_assert(sizeof(Snapshot) % 8 == 0, "Snapshot must stay 8-aligned end-to-end");
 
 // Header sits at offset 0. 64-byte aligned so it sits on a single cache line.
