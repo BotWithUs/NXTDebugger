@@ -277,3 +277,31 @@ add_custom_command(TARGET nxt_debugger POST_BUILD
             $<TARGET_FILE_DIR:nxt_debugger>/resources
     COMMENT "Copying resources/ next to nxt_debugger.exe")
 """
+
+# --- nxtdbgctl.exe ---
+# Console client for the debugger's control pipe (src/ctl/, README "Control
+# pipe"). Deliberately tiny: it links only the JSON parser and writer, never the
+# debugger, the wire headers or the RPC codec -- it speaks line-delimited JSON
+# to the debugger and nothing else.
+[target.nxtdbgctl]
+type = "executable"
+sources = [
+    "src/ctlclient/*.cpp",
+    "src/cache/Json.cpp",
+    "src/ctl/JsonOut.cpp",
+]
+headers = [
+    "src/cache/Json.h",
+    "src/ctl/JsonOut.h",
+]
+compile-features = ["cxx_std_23"]
+include-directories = ["src"]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "UNICODE",
+    "_UNICODE",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
