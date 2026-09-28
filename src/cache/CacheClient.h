@@ -8,6 +8,11 @@
 namespace nxtdbg::cache
 {
 
+// The local NXT cache root to open when the user has not typed one: the
+// ProgramData install (standard Jagex Launcher) if present, else the older
+// LOCALAPPDATA location if that exists, else the ProgramData path regardless.
+std::wstring DefaultCacheDir();
+
 // Wraps the NXTCache.dll C ABI via LoadLibraryW + GetProcAddress so panels
 // can resolve id -> JSON without a link-time dep on NXTCache.lib.
 class CacheClient

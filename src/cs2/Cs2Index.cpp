@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 
@@ -262,6 +263,20 @@ bool ReadMap(std::ifstream &f, RefMap &m)
 Cs2Index::Cs2Index()
 {
     dir_ = DefaultAsmDir();
+}
+
+std::wstring Cs2Index::ScriptFile(int id, bool isDecompiled) const
+{
+    wchar_t name[32];
+    if (isDecompiled)
+    {
+        std::swprintf(name, 32, L"%06d.cs2", id);
+        size_t       slash  = dir_.find_last_of(L"\\/");
+        std::wstring parent = (slash == std::wstring::npos) ? dir_ : dir_.substr(0, slash);
+        return parent + L"\\cs2_decompiled\\" + name;
+    }
+    std::swprintf(name, 32, L"%06d.asm", id);
+    return dir_ + L"\\" + name;
 }
 
 Cs2Index::~Cs2Index()
