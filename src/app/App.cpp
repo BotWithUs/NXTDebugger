@@ -27,6 +27,10 @@ void DrainEvents(App &a)
     }
     std::vector<wire::EventRecord> fresh;
     a.events.Drain(a.session, fresh);
+    if (!fresh.empty())
+    {
+        ctl::RecordEvents(a, fresh);
+    }
     for (auto &r : fresh)
     {
         a.eventBacklog.push_back(r);
@@ -272,6 +276,7 @@ void App::Update()
     DrainEvents(*this);
     UpdateTapConnection(*this);
     UpdateRpcConnection(*this);
+    ctl::PumpControl(*this);
     UpdateTickPulse(*this);
 
     // Implicit dockspace covering the main viewport. PassthruCentralNode keeps

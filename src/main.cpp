@@ -236,10 +236,61 @@ void InstallFreetypeFont(ImGuiIO &io, float dpiScale)
     io.Fonts->AddFontDefault();
 }
 
+// This is a /SUBSYSTEM:WINDOWS exe, usually launched by an automation client:
+// report a bad command line on the parent's console (when there is one) rather
+// than a MessageBox that would block the caller until someone clicks it.
+void ReportUsageError(const std::wstring &msg)
+{
+    nxtdbg::log::LogError(msg.c_str());
+    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        return;
+    }
+    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    if (err && err != INVALID_HANDLE_VALUE)
+    {
+        const std::wstring line = L"nxt_debugger: " + msg + L"\n";
+        char utf8[1024];
+        int  n = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), -1, utf8, sizeof(utf8),
+                                     nullptr, nullptr);
+        DWORD written = 0;
+        if (n > 1)
+        {
+            WriteFile(err, utf8, static_cast<DWORD>(n - 1), &written, nullptr);
+        }
+    }
+    FreeConsole();
+}
+
+// Show the main window per --minimized / --hidden. SW_HIDE is honoured by not
+// showing at all (the window was created without WS_VISIBLE).
+void ShowMainWindow(HWND hwnd, int showCommand)
+{
+    if (showCommand == SW_HIDE)
+    {
+        return;
+    }
+    ShowWindow(hwnd, showCommand);
+    if (showCommand == SW_SHOWMINNOACTIVE && !IsIconic(hwnd))
+    {
+        // A parent's STARTUPINFO can override the first ShowWindow; ask again.
+        ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+    }
+    UpdateWindow(hwnd);
+}
+
 }  // namespace
 
 int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
 {
+    nxtdbg::ctl::LaunchOptions options;
+    std::wstring               optionError;
+    if (!nxtdbg::ctl::ParseLaunchOptions(GetCommandLineW(), options, optionError))
+    {
+        ReportUsageError(optionError);
+        return 2;
+    }
+
     // System DPI awareness — the OS tells us the scale once at startup and
     // doesn't auto-blur our window. We size the font for that scale below.
     // Safe to call even on Windows versions without the API; the fallback
@@ -276,8 +327,7 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
-    ShowWindow(boot.hwnd, SW_SHOWDEFAULT);
-    UpdateWindow(boot.hwnd);
+    ShowMainWindow(boot.hwnd, options.showCommand);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -286,7 +336,13 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     bool iniExisted = false;
     static std::string iniPath = ResolveIniPath(&iniExisted);
-    io.IniFilename = iniPath.c_str();
+    // A --hidden instance is headless in practice: it neither loads nor saves
+    // the shared layout, so it cannot clobber the interactive instance's.
+    io.IniFilename = options.shouldSaveLayout ? iniPath.c_str() : nullptr;
+    if (!options.shouldSaveLayout)
+    {
+        iniExisted = false;
+    }
 
     InstallFreetypeFont(io, dpiScale);
 
@@ -296,6 +352,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     nxtdbg::log::LogInfo(L"NXTDebugger ready");
     nxtdbg::app::App app;
     app.Init();
+    app.mainWindow = boot.hwnd;
+    nxtdbg::ctl::StartControl(app, options);
 
     // First run (no saved layout) gets the curated default dock layout. Existing
     // users keep their saved arrangement and can re-apply via Window > Reset layout.
@@ -359,7 +417,17 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         {
             nxtdbg::overlay::Destroy(overlay);
         }
+
+        // Minimized or hidden, SwapBuffers stops pacing the loop on vsync and
+        // it would spin a core. The frame still runs -- the control pipe and
+        // watches are serviced from App::Update -- just at ~60 Hz.
+        if (IsIconic(boot.hwnd) || !IsWindowVisible(boot.hwnd))
+        {
+            Sleep(15);
+        }
     }
+
+    nxtdbg::ctl::StopControl(app);
 
     if (nxtdbg::overlay::IsCreated(overlay))
     {

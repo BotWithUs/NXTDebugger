@@ -3,6 +3,7 @@
 #include "attach/Session.h"
 #include "cache/CacheClient.h"
 #include "cs2/Cs2Index.h"
+#include "ctl/Control.h"
 #include "gameval/GameVal.h"
 #include "rpc/RpcClient.h"
 #include "rpc/TapClient.h"
@@ -85,6 +86,12 @@ struct App
     bool                  overlayEnabled       = false;
     bool                  overlayShowAllLabels = false;
     bool                  overlayFollowFg      = true;   // hide when game unfocused
+
+    // Programmatic control surface (ctl/): the named-pipe server, watches and
+    // change / event logs. Pumped once per frame from Update(), after the RPC
+    // connection is settled, so control requests share `rpc` on this thread.
+    ctl::ControlState     ctl;
+    HWND                  mainWindow = nullptr;   // for the `quit` command
 
     void Init();
     void Update();   // called once per frame after ImGui::NewFrame()
