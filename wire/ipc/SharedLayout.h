@@ -22,6 +22,18 @@ namespace nxt::ipc {
 
 // Magic = 'N' 'X' 'T' 'S' little-endian. Consumers verify before binding.
 inline constexpr uint32_t kMagic           = 0x5354584Eu;
+// v22 raised kOpenIfaceCap from 64 to 256 and added openIfaceTotal beside
+// openIfaceCount. A default RS3 HUD already holds ~56 open sub-interfaces, so
+// 64 overflowed as soon as a couple of panels opened. The producer walks the
+// client's open-subs hash table in bucket order and the bank (517, mounted at
+// 1477:694) hashes into the LAST bucket, so it was the first id cut: the bank
+// was visibly open while the snapshot said it was not. openIfaceTotal is the
+// table's own element count (0 when the table is unreadable), so a consumer
+// can now see truncation instead of inferring absence from it. The block is
+// followed by an explicit u32 pad that keeps it ending at 4 mod 8 as before,
+// so every field after it moves by exactly 776 bytes and keeps its alignment.
+// sizeof(Snapshot) goes from 410800 to 411576. Hard version bump.
+//
 // v21 added entity facing: a u16 `orientation` on NpcEntry (+36), PlayerEntry
 // (+28) and LocalPlayer (+32). NpcEntry grows 36 -> 40 and PlayerEntry 28 -> 32;
 // LocalPlayer reuses its existing 4-byte pad and keeps sizeof 552. Growing the
@@ -93,13 +105,14 @@ inline constexpr uint32_t kMagic           = 0x5354584Eu;
 //
 // v14 added the openIfaceCount + openIfaces[] tail block — a per-tick snapshot
 // of every sub-interface the client currently has open. Replaces the RPC
-// round-trip scripts would otherwise pay for an "is-open" probe; the keyset is
-// small (~20 ids) so consumers scan it locally.
+// round-trip scripts would otherwise pay for an "is-open" probe. The keyset
+// was assumed to be ~20 ids; it is not (a bare HUD is ~56, see v22), but it is
+// still small enough that consumers scan it locally.
 //
 // v13 dropped the per-interface ifaceVersions[] array. Interface state is now
 // read fresh on demand via the RPC handlers, so the consumer no longer caches
 // component results behind an invalidation token.
-inline constexpr uint32_t kProtocolVersion = 21;
+inline constexpr uint32_t kProtocolVersion = 22;
 
 // Caps mirror the game's own protocol caps:
 //   - NPCs: the client tracks at most 1024 loaded NPCs.
@@ -123,12 +136,14 @@ inline constexpr uint32_t kInventoryItemCap = 2048;
 // hits the cap.
 inline constexpr uint32_t kLocationCap = 8192;
 
-// Open sub-interfaces cap. Bounds the per-tick snapshot of the client's set of
-// open sub-interfaces. Typical live counts are <20
-// (HUD root + a couple of dialogs + bank + skill guides); 64 leaves plenty
-// of headroom and costs 260 B per snapshot buffer. Overflow truncates
-// silently — the producer stops appending once it hits the cap.
-inline constexpr uint32_t kOpenIfaceCap = 64;
+// Open sub-interfaces cap (256 since v22; was 64). Bounds the per-tick snapshot
+// of the client's set of open sub-interfaces. Measured live on 950-1: a default
+// HUD with nothing else open is already 56 entries, and every panel, dialog and
+// bank adds more, so the old cap of 64 overflowed in ordinary play. 256 is ~4x
+// the measured baseline and costs 1 KB per snapshot buffer. On overflow the
+// producer stops appending, but openIfaceTotal still carries the table's true
+// size, so the truncation is visible to consumers rather than silent.
+inline constexpr uint32_t kOpenIfaceCap = 256;
 
 // Ground items cap. Ground-item tracking is bounds-gated by the loaded scene
 // (~104x104 tiles) and most tiles carry no drops, so realistic live counts
@@ -540,14 +555,27 @@ struct Snapshot {
     // locally instead of paying the per-tick RPC round-trip.
     // openIfaceCount is the live entry count (0..kOpenIfaceCap); entries
     // beyond that index are stale and must not be read.
+    //
+    // openIfaceTotal (v22+) is the client table's own element count, sampled
+    // in the same pass that fills openIfaces, or 0 when the table could not be
+    // read this tick. openIfaceCount < openIfaceTotal means the list is
+    // incomplete: either the cap truncated it, or a table node carried no
+    // readable sub-interface. Either way an id missing from openIfaces is then
+    // NOT proof that the interface is closed.
     uint32_t        openIfaceCount;
+    uint32_t        openIfaceTotal;
     int32_t         openIfaces[kOpenIfaceCap];
+    // count(4) + total(4) + kOpenIfaceCap*4 starts and ends at 0 mod 8. This pad
+    // puts the block's end back at 4 mod 8, where the v14..v21 block ended, so
+    // the ground-items / projectiles / gameCycle / dynRegion chain below keeps
+    // the exact alignment reasoning it was written against.
+    uint32_t        _padAfterOpenIfaces;
 
     // Ground items block (v15+). groundItemCount entries in groundItems[];
     // producer truncates silently at kGroundItemCap. One row per live ground
     // item stack with itemId >= 0.
     // Replaces the retired query_ground_items RPC. The block lands the
-    // running offset at 0 mod 8 (openIfaces ended at 4 mod 8, the new
+    // running offset at 0 mod 8 (the open-ifaces block ends at 4 mod 8, then
     // count(4) + 16384 bytes of data) — no trailing pad needed for the
     // alignof-8 Snapshot. The v14 _padTail is gone.
     uint32_t        groundItemCount;
@@ -655,15 +683,33 @@ static_assert(offsetof(Snapshot, openIfaceCount) == 48 + sizeof(LocalPlayer)
                                                       + sizeof(InventoryHeader) * kInventoryCap
                                                       + sizeof(InventoryItem)   * kInventoryItemCap
                                                       + sizeof(ProducerState),                  "openIfaceCount offset");
-static_assert(offsetof(Snapshot, openIfaces)     == 52 + sizeof(LocalPlayer)
+static_assert(offsetof(Snapshot, openIfaceTotal) == 52 + sizeof(LocalPlayer)
+                                                      + sizeof(NpcEntry)        * kNpcCap
+                                                      + sizeof(PlayerEntry)     * kPlayerCap
+                                                      + sizeof(LocationEntry)   * kLocationCap
+                                                      + sizeof(InventoryHeader) * kInventoryCap
+                                                      + sizeof(InventoryItem)   * kInventoryItemCap
+                                                      + sizeof(ProducerState),                  "openIfaceTotal offset");
+static_assert(offsetof(Snapshot, openIfaces)     == 56 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
                                                       + sizeof(InventoryHeader) * kInventoryCap
                                                       + sizeof(InventoryItem)   * kInventoryItemCap
                                                       + sizeof(ProducerState),                  "openIfaces offset");
+static_assert(offsetof(Snapshot, _padAfterOpenIfaces)
+                                                 == 56 + sizeof(LocalPlayer)
+                                                      + sizeof(NpcEntry)        * kNpcCap
+                                                      + sizeof(PlayerEntry)     * kPlayerCap
+                                                      + sizeof(LocationEntry)   * kLocationCap
+                                                      + sizeof(InventoryHeader) * kInventoryCap
+                                                      + sizeof(InventoryItem)   * kInventoryItemCap
+                                                      + sizeof(ProducerState)
+                                                      + sizeof(int32_t)         * kOpenIfaceCap, "_padAfterOpenIfaces offset");
+static_assert(offsetof(Snapshot, groundItemCount) % 8 == 4,
+              "open-ifaces block must end at 4 mod 8; the tail's alignment reasoning depends on it");
 static_assert(offsetof(Snapshot, groundItemCount)
-                                                 == 52 + sizeof(LocalPlayer)
+                                                 == 60 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -672,7 +718,7 @@ static_assert(offsetof(Snapshot, groundItemCount)
                                                       + sizeof(ProducerState)
                                                       + sizeof(int32_t)         * kOpenIfaceCap, "groundItemCount offset");
 static_assert(offsetof(Snapshot, groundItems)
-                                                 == 56 + sizeof(LocalPlayer)
+                                                 == 64 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -681,7 +727,7 @@ static_assert(offsetof(Snapshot, groundItems)
                                                       + sizeof(ProducerState)
                                                       + sizeof(int32_t)         * kOpenIfaceCap, "groundItems offset");
 static_assert(offsetof(Snapshot, projectileCount)
-                                                 == 56 + sizeof(LocalPlayer)
+                                                 == 64 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -691,7 +737,7 @@ static_assert(offsetof(Snapshot, projectileCount)
                                                       + sizeof(int32_t)         * kOpenIfaceCap
                                                       + sizeof(GroundItemEntry) * kGroundItemCap, "projectileCount offset");
 static_assert(offsetof(Snapshot, projectiles)
-                                                 == 60 + sizeof(LocalPlayer)
+                                                 == 68 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -703,7 +749,7 @@ static_assert(offsetof(Snapshot, projectiles)
 // Tail field — was the anonymous _padAfterProjectiles slot through v17, so this
 // assert is what pins v18's reuse of it to the exact bytes the old pad occupied.
 static_assert(offsetof(Snapshot, gameCycle)
-                                                 == 60 + sizeof(LocalPlayer)
+                                                 == 68 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -715,7 +761,7 @@ static_assert(offsetof(Snapshot, gameCycle)
                                                       + sizeof(ProjectileEntry) * kProjectileCap,
                                                                                                 "gameCycle offset");
 static_assert(offsetof(Snapshot, dynRegion)
-                                                 == 64 + sizeof(LocalPlayer)
+                                                 == 72 + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
                                                       + sizeof(LocationEntry)   * kLocationCap
@@ -727,7 +773,7 @@ static_assert(offsetof(Snapshot, dynRegion)
                                                       + sizeof(ProjectileEntry) * kProjectileCap,
                                                                                                 "dynRegion offset");
 static_assert(offsetof(Snapshot, dynChunkCount)
-                                                 == 64 + sizeof(DynamicRegion)
+                                                 == 72 + sizeof(DynamicRegion)
                                                       + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
@@ -740,7 +786,7 @@ static_assert(offsetof(Snapshot, dynChunkCount)
                                                       + sizeof(ProjectileEntry) * kProjectileCap,
                                                                                                 "dynChunkCount offset");
 static_assert(offsetof(Snapshot, dynChunks)
-                                                 == 68 + sizeof(DynamicRegion)
+                                                 == 76 + sizeof(DynamicRegion)
                                                       + sizeof(LocalPlayer)
                                                       + sizeof(NpcEntry)        * kNpcCap
                                                       + sizeof(PlayerEntry)     * kPlayerCap
@@ -752,7 +798,7 @@ static_assert(offsetof(Snapshot, dynChunks)
                                                       + sizeof(GroundItemEntry) * kGroundItemCap
                                                       + sizeof(ProjectileEntry) * kProjectileCap,
                                                                                                 "dynChunks offset");
-static_assert(sizeof(Snapshot) == 68 + sizeof(DynamicRegion)
+static_assert(sizeof(Snapshot) == 76 + sizeof(DynamicRegion)
                                 + sizeof(LocalPlayer)
                                 + sizeof(NpcEntry)        * kNpcCap
                                 + sizeof(PlayerEntry)     * kPlayerCap
@@ -766,19 +812,28 @@ static_assert(sizeof(Snapshot) == 68 + sizeof(DynamicRegion)
                                 + sizeof(uint32_t)        * kDynChunkCap,
               "Snapshot has unexpected trailing padding");
 
-// Absolute pins on the v21 tail. Every other assert above is expressed
+// Absolute pins on the v22 layout. Every other assert above is expressed
 // relatively, which means two simultaneous cap edits could cancel out and still
-// pass the whole chain. These two cannot — update them deliberately, never
-// mechanically, and only when the wire genuinely moved. Both moved by
-// 4 * (kNpcCap + kPlayerCap) = 12288 in v21, which is the whole cost of the
-// NpcEntry/PlayerEntry orientation field (were 332936 / 398512 in v20, and
-// 300168 / 365744 in v19).
-static_assert(offsetof(Snapshot, players) == 41544, "v21 players offset drifted");
-static_assert(offsetof(Snapshot, dynRegion) == 345224, "v21 dynRegion offset drifted");
-// Literal, deliberately NOT written as `345264 + sizeof(uint32_t) * kDynChunkCap`
+// pass the whole chain. These cannot — update them deliberately, never
+// mechanically, and only when the wire genuinely moved.
+//
+// v22: everything up to and including openIfaceCount is unmoved from v21.
+// openIfaceTotal takes v21's openIfaces slot, and every field from
+// groundItemCount on moves by 776 = 4 (openIfaceTotal) + 4 * (256 - 64)
+// (the cap raise) + 4 (_padAfterOpenIfaces). dynRegion was 345224 and
+// sizeof(Snapshot) 410800 in v21; v21 itself moved both by
+// 4 * (kNpcCap + kPlayerCap) = 12288 for the orientation field (332936 /
+// 398512 in v20, and 300168 / 365744 in v19).
+static_assert(offsetof(Snapshot, players) == 41544, "v22 players offset drifted");
+static_assert(offsetof(Snapshot, openIfaceCount) == 320376, "v22 openIfaceCount offset drifted");
+static_assert(offsetof(Snapshot, openIfaceTotal) == 320380, "v22 openIfaceTotal offset drifted");
+static_assert(offsetof(Snapshot, openIfaces) == 320384, "v22 openIfaces offset drifted");
+static_assert(offsetof(Snapshot, groundItemCount) == 321412, "v22 groundItemCount offset drifted");
+static_assert(offsetof(Snapshot, dynRegion) == 346000, "v22 dynRegion offset drifted");
+// Literal, deliberately NOT written as `346040 + sizeof(uint32_t) * kDynChunkCap`
 // — that form is parameterised on the cap and would keep passing through a cap
 // change, which is exactly the drift this assert exists to catch.
-static_assert(sizeof(Snapshot) == 410800, "v21 Snapshot size drifted");
+static_assert(sizeof(Snapshot) == 411576, "v22 Snapshot size drifted");
 static_assert(sizeof(Snapshot) % 8 == 0, "Snapshot must stay 8-aligned end-to-end");
 
 // Header sits at offset 0. 64-byte aligned so it sits on a single cache line.

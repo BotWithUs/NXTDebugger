@@ -1,4 +1,4 @@
-# BotWithUs agent wire protocol — v21
+# BotWithUs agent wire protocol — v22
 
 How to read live RuneScape 3 state out of the BotWithUs agent, and how to drive
 it, from **any language**. This is the normative description of the bytes; the
@@ -29,7 +29,7 @@ every client logic step (~20ms) and costs a consumer nothing but a memory read.
 
 ## 1. Versioning
 
-`kProtocolVersion` is **21**.
+`kProtocolVersion` is **22**.
 
 - The version gates the **snapshot layout only**. Field offsets move between
   versions and there is **no forward compatibility**.
@@ -53,23 +53,23 @@ user as the client.
 Then validate, in this order:
 
 1. `magic` == `0x5354584E` (`'N','X','T','S'` LE). Wrong magic → not our region.
-2. `version` == `21`. Mismatch → refuse (see §1).
-3. `headerSize` == 64 and `snapshotSize` == 410800 as a sanity check.
+2. `version` == `22`. Mismatch → refuse (see §1).
+3. `headerSize` == 64 and `snapshotSize` == 411576 as a sanity check.
 
 ### 2.2 Region geometry
 
 | Constant | Value |
 |---|---|
 | `kMagic` | `0x5354584E` |
-| `kProtocolVersion` | 21 |
+| `kProtocolVersion` | 22 |
 | `sizeof(SharedHeader)` | 64 |
-| `sizeof(Snapshot)` | 410800 |
-| snapshot stride (padded to 64B) | 410816 |
+| `sizeof(Snapshot)` | 411576 |
+| snapshot stride (padded to 64B) | 411584 |
 | Snapshot[0] offset | 64 |
-| Snapshot[1] offset | 410880 |
-| Event ring offset | 821696 |
+| Snapshot[1] offset | 411648 |
+| Event ring offset | 823232 |
 | Event ring size (padded) | 131136 |
-| Total region size | 952832 |
+| Total region size | 954368 |
 
 Do not hardcode these blindly — the header carries `snapshotOff0`,
 `snapshotOff1`, `ringOff` and `ringSize` for exactly this reason. Prefer reading
@@ -80,10 +80,10 @@ them.
 | field | off | size | notes |
 |---|---|---|---|
 | `magic` | 0 | 4 | `'N','X','T','S'` |
-| `version` | 4 | 4 | == 21 |
+| `version` | 4 | 4 | == 22 |
 | `headerSize` | 8 | 4 | == 64 |
 | `layoutId` | 12 | 4 | reserved, 0 |
-| `snapshotSize` | 16 | 4 | == 410800 |
+| `snapshotSize` | 16 | 4 | == 411576 |
 | `snapshotOff0` | 20 | 4 | byte offset of buffer 0 |
 | `snapshotOff1` | 24 | 4 | byte offset of buffer 1 |
 | `ringOff` | 28 | 4 | byte offset of the event ring |
@@ -100,7 +100,7 @@ that reads the front buffer races with nothing.
 ```
 idx  = atomic_load_acquire(header.frontIdx)     // 0 or 1
 base = (idx == 0) ? header.snapshotOff0 : header.snapshotOff1
-copy 410800 bytes from mapping[base]            // then parse the copy
+copy 411576 bytes from mapping[base]            // then parse the copy
 ```
 
 Two rules that matter:
@@ -116,7 +116,7 @@ Two rules that matter:
 There is no reader registration and no backpressure — the producer never waits
 for you.
 
-### 2.5 `Snapshot` (410800 bytes)
+### 2.5 `Snapshot` (411576 bytes)
 
 | field | off | size | notes |
 |---|---|---|---|
@@ -138,19 +138,29 @@ for you.
 | `invItems` | 303960 | 16384 | `InventoryItem[2048]`, stride 8 |
 | `producer` | 320344 | 32 | `ProducerState`, §2.9 |
 | `openIfaceCount` | 320376 | 4 | |
-| `openIfaces` | 320380 | 256 | `int32[64]` — open sub-interface ids |
-| `groundItemCount` | 320636 | 4 | |
-| `groundItems` | 320640 | 16384 | `GroundItemEntry[1024]`, stride 16 |
-| `projectileCount` | 337024 | 4 | |
-| `projectiles` | 337028 | 8192 | `ProjectileEntry[256]`, stride 32 |
-| `gameCycle` | 345220 | 4 | **~20ms client cycle**, see §2.6 |
-| `dynRegion` | 345224 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
-| `dynChunkCount` | 345260 | 4 | |
-| `dynChunks` | 345264 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
+| `openIfaceTotal` | 320380 | 4 | **v22+**. The client's own count of open sub-interfaces, from the same read; 0 when unreadable. See below |
+| `openIfaces` | 320384 | 1024 | `int32[256]` — open sub-interface ids (cap was 64 through v21) |
+| `_padAfterOpenIfaces` | 321408 | 4 | **v22+**, reserved |
+| `groundItemCount` | 321412 | 4 | |
+| `groundItems` | 321416 | 16384 | `GroundItemEntry[1024]`, stride 16 |
+| `projectileCount` | 337800 | 4 | |
+| `projectiles` | 337804 | 8192 | `ProjectileEntry[256]`, stride 32 |
+| `gameCycle` | 345996 | 4 | **~20ms client cycle**, see §2.6 |
+| `dynRegion` | 346000 | 36 | `DynamicRegion` — instance descriptor scalars, §2.10 |
+| `dynChunkCount` | 346036 | 4 | |
+| `dynChunks` | 346040 | 65536 | `uint32[16384]` — packed chunk descriptors, §2.10 |
 
 Every `*Count` is the live entry count; **entries past it are stale and must not
 be read**. Counts saturate at the array cap and the producer truncates silently,
 so a count equal to the cap may mean "there were more".
+
+`openIfaces` is the exception: its truncation is visible. `openIfaceTotal` is
+the size of the client's own table. When `openIfaceCount < openIfaceTotal`, the
+list is incomplete, and an id missing from it is **not** proof that interface is
+closed. The producer walks the table in hash order, which is keyed on where a sub
+is mounted, so a cap cuts whichever subs hash last. Through v21 the cap was 64.
+A default HUD is ~56 entries, and the bank (517) hashes into the last bucket, so
+the bank was the first id lost.
 
 `dynChunks` is the one array the producer does **not** clear when empty: in a
 static scene it publishes `dynChunkCount == 0` and leaves the 64 KB untouched
@@ -597,7 +607,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Broker | `_debug.subscribe`, `_debug.unsubscribe`, `_debug.publish` |
 | Clocks / state | `get_game_cycle`, `get_login_state` |
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
-| Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
+| Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `exit_to_lobby`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
 | Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `move_stats`, `_debug.inject_click` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
@@ -628,7 +638,12 @@ Four gaps worth knowing before you design around them:
   for a transition the client is not positioned to make returns an error
   (`not_on_login_screen`, `not_in_lobby`, `unsupported_new_state`) where it
   previously returned success. `login_to_lobby` and `login_to_game` are the
-  explicit halves of the same pair. **`set_world` is still a stub**, as are the
+  explicit halves of the same pair. All three only move forward; the way back
+  from the world is `exit_to_lobby`. It takes no params and queues the Escape
+  menu's Exit to Lobby click (1433:69), so it answers `{}` once the click is
+  queued, not once the lobby is reached. Poll `gameState` for 30 → 40 → 20.
+  Errors: `not_in_game`, `actions_blocked`, `logout_ui_not_found`,
+  `action_queue_full`. **`set_world` is still a stub**, as are the
   three Capture methods, which answer `{error: "not_implemented"}`.
 - **`query_spot_anims` covers the world list only.** It walks the client's
   world/static spot-anim list and answers `{spot_anims: [{id, tile_x, tile_y}]}`,

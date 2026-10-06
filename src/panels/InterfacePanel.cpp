@@ -691,8 +691,30 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
     }
 }
 
+// "published / client total" hero for the open list (wire v22). openTotal is
+// the client table's own size, so a count below it means the agent cut the
+// list short and an id missing from it is NOT proof the interface is closed.
+// Flagged with a word as well as a colour, so the state never rests on colour.
+void DrawOpenIfaceCountStat(uint32_t openCount, uint32_t openTotal)
+{
+    const bool isIncomplete = openCount < openTotal;
+    char hero[32];
+    std::snprintf(hero, sizeof(hero), "%u / %u", openCount, openTotal);
+    theme::HeroStat("open / client total", hero,
+                    isIncomplete ? theme::kWarn : theme::kAccent);
+    if (!isIncomplete)
+    {
+        return;
+    }
+    theme::Pill("truncated", theme::kAccentSoft, theme::kWarn);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
+    ImGui::TextWrapped("%u open interfaces are not listed. One missing from this list "
+                       "may still be open.", openTotal - openCount);
+    ImGui::PopStyleColor();
+}
+
 void DrawPaneOpenIfaces(app::App &a, PanelState &s,
-                        const int32_t *open, uint32_t openCount)
+                        const int32_t *open, uint32_t openCount, uint32_t openTotal)
 {
     if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true)) { theme::EndCard(); return; }
 
@@ -701,9 +723,7 @@ void DrawPaneOpenIfaces(app::App &a, PanelState &s,
                              s.ifaceFilter, sizeof(s.ifaceFilter));
 
     ImGui::Spacing();
-    char hero[24];
-    std::snprintf(hero, sizeof(hero), "%u", openCount);
-    theme::HeroStat("open", hero, theme::kAccent);
+    DrawOpenIfaceCountStat(openCount, openTotal);
 
     ImGui::Separator();
     ImGui::BeginChild("##ifaces", ImVec2(0, 0), 0);
@@ -1170,9 +1190,14 @@ void DrawInterfacePanel(app::App &a)
     PanelState &s = State();
     EnsureConnection(a, s);
 
+    // snap points into the live front buffer, so each scalar is read exactly
+    // once here and every pane below works from these locals. The count is
+    // clamped to the array so a torn or hostile value cannot index past it.
     const auto *snap = wire::CurrentSnapshot(a.session);
     const int32_t *open = snap ? snap->openIfaces : nullptr;
-    const uint32_t openCount = snap ? snap->openIfaceCount : 0;
+    const uint32_t rawCount  = snap ? snap->openIfaceCount : 0;
+    const uint32_t openCount = std::min(rawCount, nxt::ipc::kOpenIfaceCap);
+    const uint32_t openTotal = snap ? snap->openIfaceTotal : 0;
     const float dt = ImGui::GetIO().DeltaTime;
 
     if (snap)
@@ -1196,7 +1221,7 @@ void DrawInterfacePanel(app::App &a)
     const float colB  = std::min(fs * 40.0f, avail * 0.44f);
 
     ImGui::BeginChild("##paneA", ImVec2(colA, 0), 0);
-    DrawPaneOpenIfaces(a, s, open, openCount);
+    DrawPaneOpenIfaces(a, s, open, openCount, openTotal);
     ImGui::EndChild();
 
     ImGui::SameLine();

@@ -14,6 +14,11 @@
 
 namespace nxt::rpc::msgpack {
 
+// Maximum container nesting SkipValue accepts (see its comment for how depth
+// is counted). No RPC in the tree nests past ~4; 64 leaves generous headroom
+// and costs 512 bytes of stack for the pending-item counters.
+inline constexpr uint32_t kMaxNesting = 64;
+
 // Tags for Peek(); we don't try to distinguish int/uint widths here, since
 // callers ask for "give me an int64" and the reader handles narrowing.
 enum class Type : uint8_t {
@@ -56,11 +61,24 @@ public:
     // Java host doesn't emit bin today; this is the first inbound bin field.
     bool ReadBin(const uint8_t*& bytes, uint32_t& len) noexcept;
 
+    // Container headers. Both reject a count that cannot possibly fit in the
+    // bytes that remain (every msgpack value is at least one byte, so an
+    // array of n needs >= n bytes and a map of n needs >= 2n), so a caller
+    // looping to `count` fails before it acts on the first element rather
+    // than part-way through.
     bool ReadArrayHeader(uint32_t& count)             noexcept;
     bool ReadMapHeader(uint32_t& count)               noexcept;
 
     // Skip the next value of any supported type, including nested
-    // arrays/maps. Returns false if the value is malformed.
+    // arrays/maps. Returns false if the value is malformed, truncated, or
+    // nested deeper than kMaxNesting.
+    //
+    // Depth convention: counted per call, from the value being skipped. If
+    // that value is itself a container it is depth 1; a container inside it
+    // is depth 2; at most kMaxNesting containers may be open at once, and an
+    // EMPTY container still counts (an empty array at depth 65 is refused).
+    // Scalars add no depth. Iterative with fixed storage -- no recursion, so a hostile
+    // frame cannot exhaust the calling thread's stack.
     bool SkipValue()                                  noexcept;
 
     bool AtEnd() const noexcept { return m_pos >= m_len; }
@@ -73,7 +91,12 @@ public:
     const uint8_t *Data() const noexcept { return m_data; }
 
 private:
-    bool Need(size_t n) const noexcept { return m_pos + n <= m_len; }
+    bool Need(size_t n) const noexcept { return n <= m_len - m_pos; }
+    bool FitsItems(uint64_t items) const noexcept { return items <= Remaining(); }
+    bool SkipScalar(Type t)                           noexcept;
+    bool ReadContainerItems(Type t, uint64_t& outItems) noexcept;
+    bool ReadContainerHeader(uint8_t fixBase, uint8_t tag16, uint8_t tag32,
+                             uint32_t valuesPerItem, uint32_t& count) noexcept;
     uint8_t  R8()  noexcept;
     uint16_t R16() noexcept;
     uint32_t R32() noexcept;
