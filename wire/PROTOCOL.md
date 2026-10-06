@@ -597,7 +597,7 @@ right way to target a specific agent build rather than hardcoding this list.
 | Broker | `_debug.subscribe`, `_debug.unsubscribe`, `_debug.publish` |
 | Clocks / state | `get_game_cycle`, `get_login_state` |
 | Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
-| Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
+| Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `exit_to_lobby`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
 | Scripting / input | `get_script_handle`, `execute_script`, `destroy_script_handle`, `send_key`, `send_click`, `record_move_path`, `click_stats`, `move_stats`, `_debug.inject_click` |
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
@@ -628,7 +628,12 @@ Four gaps worth knowing before you design around them:
   for a transition the client is not positioned to make returns an error
   (`not_on_login_screen`, `not_in_lobby`, `unsupported_new_state`) where it
   previously returned success. `login_to_lobby` and `login_to_game` are the
-  explicit halves of the same pair. **`set_world` is still a stub**, as are the
+  explicit halves of the same pair. All three only move forward; the way back
+  from the world is `exit_to_lobby`. It takes no params and queues the Escape
+  menu's Exit to Lobby click (1433:69), so it answers `{}` once the click is
+  queued, not once the lobby is reached. Poll `gameState` for 30 → 40 → 20.
+  Errors: `not_in_game`, `actions_blocked`, `logout_ui_not_found`,
+  `action_queue_full`. **`set_world` is still a stub**, as are the
   three Capture methods, which answer `{error: "not_implemented"}`.
 - **`query_spot_anims` covers the world list only.** It walks the client's
   world/static spot-anim list and answers `{spot_anims: [{id, tile_x, tile_y}]}`,
