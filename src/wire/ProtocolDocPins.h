@@ -31,9 +31,9 @@ namespace nxt::ipc
 {
 
 // --- PROTOCOL.md §2.2 geometry ---
-static_assert(kProtocolVersion == 22);
+static_assert(kProtocolVersion == 23);
 static_assert(sizeof(SharedHeader) == 64);
-static_assert(sizeof(Snapshot) == 411576);
+static_assert(sizeof(Snapshot) == 411832);
 
 // --- PROTOCOL.md §2.3 SharedHeader ---
 static_assert(offsetof(SharedHeader, magic) == 0);
@@ -69,15 +69,22 @@ static_assert(offsetof(Snapshot, producer) == 320344);
 static_assert(offsetof(Snapshot, openIfaceCount) == 320376);
 static_assert(offsetof(Snapshot, openIfaceTotal) == 320380);
 static_assert(offsetof(Snapshot, openIfaces) == 320384);
-static_assert(offsetof(Snapshot, _padAfterOpenIfaces) == 321408);
-static_assert(offsetof(Snapshot, groundItemCount) == 321412);
-static_assert(offsetof(Snapshot, groundItems) == 321416);
-static_assert(offsetof(Snapshot, projectileCount) == 337800);
-static_assert(offsetof(Snapshot, projectiles) == 337804);
-static_assert(offsetof(Snapshot, gameCycle) == 345996);
-static_assert(offsetof(Snapshot, dynRegion) == 346000);
-static_assert(offsetof(Snapshot, dynChunkCount) == 346036);
-static_assert(offsetof(Snapshot, dynChunks) == 346040);
+static_assert(offsetof(Snapshot, openIfaceFlags) == 321408);
+static_assert(offsetof(Snapshot, _padAfterOpenIfaces) == 321664);
+static_assert(offsetof(Snapshot, groundItemCount) == 321668);
+static_assert(offsetof(Snapshot, groundItems) == 321672);
+static_assert(offsetof(Snapshot, projectileCount) == 338056);
+static_assert(offsetof(Snapshot, projectiles) == 338060);
+static_assert(offsetof(Snapshot, gameCycle) == 346252);
+static_assert(offsetof(Snapshot, dynRegion) == 346256);
+static_assert(offsetof(Snapshot, dynChunkCount) == 346292);
+static_assert(offsetof(Snapshot, dynChunks) == 346296);
+
+// --- PROTOCOL.md §2.5 openIfaceFlags bit layout (v23) ---
+static_assert(sizeof(Snapshot::openIfaceFlags) == kOpenIfaceCap);
+static_assert(kOpenIfaceTypeMask == 0x07);
+static_assert(kOpenIfaceTypeUnknown == 0x07);
+static_assert(kOpenIfaceFlagClientOpened == 0x08);
 
 // --- PROTOCOL.md §2.7 LocalPlayer ---
 static_assert(sizeof(LocalPlayer) == 552);
@@ -209,12 +216,12 @@ static_assert(sizeof(ChatMessageBody) == 112);
 // The doc prints these as a table of absolute byte figures; the header derives
 // them, so this is where the two are held equal.
 static_assert(kMagic           == 0x5354584Eu);
-static_assert(kSnapshotStride  == 411584);   // sizeof(Snapshot) padded to 64B
+static_assert(kSnapshotStride  == 411840);   // sizeof(Snapshot) padded to 64B
 static_assert(kSnapshotOff0    == 64);
-static_assert(kSnapshotOff1    == 411648);
-static_assert(kRingOff         == 823232);
+static_assert(kSnapshotOff1    == 411904);
+static_assert(kRingOff         == 823744);
 static_assert(kRingStride      == 131136);   // "Event ring size (padded)"
-static_assert(kRegionSize      == 954368);   // "Total region size"
+static_assert(kRegionSize      == 954880);   // "Total region size"
 
 // --- PROTOCOL.md §3.1 event ring layout ---
 static_assert(kEventRingSlots  == 1024);     // EventRing.slotCount
