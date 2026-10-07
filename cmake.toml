@@ -275,3 +275,31 @@ add_custom_command(TARGET nxt_debugger POST_BUILD
             $<TARGET_FILE_DIR:nxt_debugger>/resources
     COMMENT "Copying resources/ next to nxt_debugger.exe")
 """
+
+# --- nxt_debugger_wire_tests (ctest) ---
+# The wire decode with nothing else linked: no ImGui, no Session, no window.
+# It compiles src/wire/OpenIface.cpp -- the same file the Interfaces panel
+# calls -- against the same wire/ headers, plus ProtocolDocPins.h, so a layout
+# that drifts fails here as well as in the app. Run: ctest --test-dir build -C Release
+[target.nxt_debugger_wire_tests]
+type = "executable"
+sources = [
+    "tests/WireTests.cpp",
+    "src/wire/OpenIface.cpp",
+]
+compile-features = ["cxx_std_23"]
+include-directories = [
+    "src",
+    "wire",
+]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
+
+[[test]]
+name = "wire"
+command = "$<TARGET_FILE:nxt_debugger_wire_tests>"
