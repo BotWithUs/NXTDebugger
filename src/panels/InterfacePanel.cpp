@@ -5,6 +5,7 @@
 #include "app/Theme.h"
 #include "rpc/MsgPack.h"
 #include "rpc/RpcClient.h"
+#include "wire/OpenIface.h"
 #include "wire/SnapshotReader.h"
 
 #include "ipc/SharedLayout.h"
@@ -626,35 +627,55 @@ void UpdatePickMode(app::App &a, PanelState &s)
 // Pane 1 — Open Interfaces
 // ---------------------------------------------------------------------------
 
-bool RowMatchesFilter(app::App &a, int32_t id, const char *filter)
+// Case-insensitive ASCII substring.
+bool ContainsNoCase(const char *text, const char *needle)
+{
+    for (size_t i = 0; text[i]; ++i)
+    {
+        bool ok = true;
+        for (size_t j = 0; needle[j]; ++j)
+        {
+            if (!text[i + j]) { ok = false; break; }
+            char ca = text[i + j];   if (ca >= 'a' && ca <= 'z') ca = static_cast<char>(ca - 32);
+            char cb = needle[j];     if (cb >= 'a' && cb <= 'z') cb = static_cast<char>(cb - 32);
+            if (ca != cb) { ok = false; break; }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
+// Matches the id, the open type ("modal", "child, cs2" -- so typing "modal"
+// lists exactly the modals), or the interface name.
+bool RowMatchesFilter(app::App &a, int32_t id, const char *typeText, const char *filter)
 {
     if (!filter || !filter[0]) return true;
     char idBuf[16];
     std::snprintf(idBuf, sizeof(idBuf), "%d", id);
     if (std::strstr(idBuf, filter)) return true;
+    if (ContainsNoCase(typeText, filter)) return true;
     const char *name = IfaceName(a, id);
-    if (name)
-    {
-        // Case-insensitive substring.
-        for (size_t i = 0; name[i]; ++i)
-        {
-            bool ok = true;
-            for (size_t j = 0; filter[j]; ++j)
-            {
-                if (!name[i + j]) { ok = false; break; }
-                char ca = name[i + j];   if (ca >= 'a' && ca <= 'z') ca = static_cast<char>(ca - 32);
-                char cb = filter[j];     if (cb >= 'a' && cb <= 'z') cb = static_cast<char>(cb - 32);
-                if (ca != cb) { ok = false; break; }
-            }
-            if (ok) return true;
-        }
-    }
-    return false;
+    return name && ContainsNoCase(name, filter);
 }
 
-void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
+// The open type after the name (wire v23): "(modal)", "(overlay)",
+// "(child, cs2)". Modal is the one a script has to care about -- it closes on
+// movement -- so it takes the accent; the word carries the meaning either way.
+void DrawOpenTypeSuffix(const wire::OpenIfaceFlags &flags, const char *typeText)
 {
-    if (!RowMatchesFilter(a, id, s.ifaceFilter)) return;
+    ImGui::SameLine();
+    const ImU32 col = flags.IsModal() ? theme::kAccent : theme::kTextDim;
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col));
+    ImGui::Text("(%s)", typeText);
+    ImGui::PopStyleColor();
+}
+
+void DrawIfaceRow(app::App &a, PanelState &s, int32_t id, uint8_t rawFlags)
+{
+    const wire::OpenIfaceFlags flags = wire::DecodeOpenIfaceFlags(rawFlags);
+    char typeText[32];
+    wire::FormatOpenIfaceType(flags, typeText, sizeof(typeText));
+    if (!RowMatchesFilter(a, id, typeText, s.ifaceFilter)) return;
 
     char label[96];
     const char *name = IfaceName(a, id);
@@ -676,6 +697,7 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
             if (!s.tree.empty()) AdoptComponent(a, s, s.tree.front());
         }
     }
+    DrawOpenTypeSuffix(flags, typeText);
     const OpenDiff *d = FindDiff(s, id);
     if (d)
     {
@@ -691,25 +713,44 @@ void DrawIfaceRow(app::App &a, PanelState &s, int32_t id)
     }
 }
 
-void DrawPaneOpenIfaces(app::App &a, PanelState &s,
-                        const int32_t *open, uint32_t openCount)
+// "published / client total" hero for the open list (wire v22). openTotal is
+// the client table's own size, so a count below it means the agent cut the
+// list short and an id missing from it is NOT proof the interface is closed.
+// Flagged with a word as well as a colour, so the state never rests on colour.
+void DrawOpenIfaceCountStat(uint32_t openCount, uint32_t openTotal)
+{
+    const bool isIncomplete = openCount < openTotal;
+    char hero[32];
+    std::snprintf(hero, sizeof(hero), "%u / %u", openCount, openTotal);
+    theme::HeroStat("open / client total", hero,
+                    isIncomplete ? theme::kWarn : theme::kAccent);
+    if (!isIncomplete)
+    {
+        return;
+    }
+    theme::Pill("truncated", theme::kAccentSoft, theme::kWarn);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
+    ImGui::TextWrapped("%u open interfaces are not listed. One missing from this list "
+                       "may still be open.", openTotal - openCount);
+    ImGui::PopStyleColor();
+}
+
+void DrawPaneOpenIfaces(app::App &a, PanelState &s, const wire::OpenIfaceList &open)
 {
     if (!theme::BeginCard("iface.open", "OPEN INTERFACES", theme::kAccent, true)) { theme::EndCard(); return; }
 
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##ifacefilter", "filter (id or name)",
+    ImGui::InputTextWithHint("##ifacefilter", "filter (id, name or type)",
                              s.ifaceFilter, sizeof(s.ifaceFilter));
 
     ImGui::Spacing();
-    char hero[24];
-    std::snprintf(hero, sizeof(hero), "%u", openCount);
-    theme::HeroStat("open", hero, theme::kAccent);
+    DrawOpenIfaceCountStat(open.count, open.total);
 
     ImGui::Separator();
     ImGui::BeginChild("##ifaces", ImVec2(0, 0), 0);
-    for (uint32_t i = 0; i < openCount; ++i)
+    for (uint32_t i = 0; i < open.count; ++i)
     {
-        DrawIfaceRow(a, s, open[i]);
+        DrawIfaceRow(a, s, open.ids[i], open.flags[i]);
     }
     ImGui::EndChild();
 
@@ -1170,15 +1211,18 @@ void DrawInterfacePanel(app::App &a)
     PanelState &s = State();
     EnsureConnection(a, s);
 
+    // snap points into the live front buffer, so each scalar is read exactly
+    // once here and every pane below works from these locals. ReadOpenIfaces
+    // reads the count once and clamps it to the array, so a torn or hostile
+    // value cannot index past the ids or the index-parallel flags.
     const auto *snap = wire::CurrentSnapshot(a.session);
-    const int32_t *open = snap ? snap->openIfaces : nullptr;
-    const uint32_t openCount = snap ? snap->openIfaceCount : 0;
+    const wire::OpenIfaceList open = wire::ReadOpenIfaces(snap);
     const float dt = ImGui::GetIO().DeltaTime;
 
     if (snap)
     {
-        UpdateDiffs(s, open, openCount, dt);
-        HandleStaleTree(s, open, openCount);
+        UpdateDiffs(s, open.ids, open.count, dt);
+        HandleStaleTree(s, open.ids, open.count);
     }
     MaybeAutoRefresh(a, s);
     UpdatePickMode(a, s);
@@ -1196,7 +1240,7 @@ void DrawInterfacePanel(app::App &a)
     const float colB  = std::min(fs * 40.0f, avail * 0.44f);
 
     ImGui::BeginChild("##paneA", ImVec2(colA, 0), 0);
-    DrawPaneOpenIfaces(a, s, open, openCount);
+    DrawPaneOpenIfaces(a, s, open);
     ImGui::EndChild();
 
     ImGui::SameLine();

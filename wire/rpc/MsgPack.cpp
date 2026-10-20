@@ -233,63 +233,119 @@ bool Reader::ReadBin(const uint8_t*& bytes, uint32_t& len) noexcept {
     return true;
 }
 
-bool Reader::ReadArrayHeader(uint32_t& count) noexcept {
-    if (!Need(1)) return false;
-    uint8_t b = m_data[m_pos];
-    if (b >= 0x90 && b <= 0x9F) { count = b & 0x0Fu; ++m_pos; return true; }
-    if (b == kArray16) {
-        if (!Need(3)) return false;
-        ++m_pos; count = R16(); return true;
-    }
-    if (b == kArray32) {
-        if (!Need(5)) return false;
-        ++m_pos; count = R32(); return true;
-    }
-    return false;
-}
-
-bool Reader::ReadMapHeader(uint32_t& count) noexcept {
-    if (!Need(1)) return false;
-    uint8_t b = m_data[m_pos];
-    if (b >= 0x80 && b <= 0x8F) { count = b & 0x0Fu; ++m_pos; return true; }
-    if (b == kMap16) {
-        if (!Need(3)) return false;
-        ++m_pos; count = R16(); return true;
-    }
-    if (b == kMap32) {
-        if (!Need(5)) return false;
-        ++m_pos; count = R32(); return true;
-    }
-    return false;
-}
-
-bool Reader::SkipValue() noexcept {
-    Type t = Peek();
-    switch (t) {
-    case Type::Nil:    return ReadNil();
-    case Type::Bool:   { bool b; return ReadBool(b); }
-    case Type::Int:    { int64_t v; return ReadInt(v); }
-    case Type::Float:  { double v; return ReadDouble(v); }
-    case Type::Str:    { const char* s; uint32_t n; return ReadString(s, n); }
-    case Type::Bin:    { const uint8_t* p; uint32_t n; return ReadBin(p, n); }
-    case Type::Array: {
-        uint32_t n;
-        if (!ReadArrayHeader(n)) return false;
-        for (uint32_t i = 0; i < n; ++i) if (!SkipValue()) return false;
-        return true;
-    }
-    case Type::Map: {
-        uint32_t n;
-        if (!ReadMapHeader(n)) return false;
-        for (uint32_t i = 0; i < n; ++i) {
-            if (!SkipValue()) return false;   // key
-            if (!SkipValue()) return false;   // value
-        }
-        return true;
-    }
-    case Type::Invalid:
-    default:
+// Shared by both container headers. `fixBase` is the fix-form range start
+// (0x90 array / 0x80 map, low nibble = count), `tag16` / `tag32` the wide
+// forms, `valuesPerItem` 1 for arrays and 2 for maps (key + value). Rejects a
+// count whose minimum encoding (one byte per value) cannot fit in the bytes
+// remaining after the header; 64-bit so 2n cannot wrap. On refusal the
+// position and `count` are left untouched.
+bool Reader::ReadContainerHeader(uint8_t fixBase, uint8_t tag16, uint8_t tag32,
+                                 uint32_t valuesPerItem, uint32_t& count) noexcept
+{
+    if (!Need(1))
+    {
         return false;
+    }
+    const uint8_t b     = m_data[m_pos];
+    const size_t  start = m_pos;
+    uint32_t      n     = 0;
+    if (b >= fixBase && b <= fixBase + 0x0F)
+    {
+        n = b & 0x0Fu;
+        ++m_pos;
+    }
+    else if (b == tag16 && Need(3))
+    {
+        ++m_pos;
+        n = R16();
+    }
+    else if (b == tag32 && Need(5))
+    {
+        ++m_pos;
+        n = R32();
+    }
+    else
+    {
+        return false;
+    }
+    if (!FitsItems(static_cast<uint64_t>(n) * valuesPerItem))
+    {
+        m_pos = start;
+        return false;
+    }
+    count = n;
+    return true;
+}
+
+bool Reader::ReadArrayHeader(uint32_t& count) noexcept
+{
+    return ReadContainerHeader(0x90, kArray16, kArray32, 1, count);
+}
+
+bool Reader::ReadMapHeader(uint32_t& count) noexcept
+{
+    return ReadContainerHeader(0x80, kMap16, kMap32, 2, count);
+}
+
+bool Reader::SkipScalar(Type t) noexcept
+{
+    switch (t)
+    {
+    case Type::Nil:   return ReadNil();
+    case Type::Bool:  { bool b; return ReadBool(b); }
+    case Type::Int:   { int64_t v; return ReadInt(v); }
+    case Type::Float: { double v; return ReadDouble(v); }
+    case Type::Str:   { const char* s; uint32_t n; return ReadString(s, n); }
+    case Type::Bin:   { const uint8_t* p; uint32_t n; return ReadBin(p, n); }
+    default:          return false;
+    }
+}
+
+// Reads a container header and returns how many values it still owes: n for
+// an array, 2n (keys + values) for a map. The header readers have already
+// checked those values can fit in the remaining bytes.
+bool Reader::ReadContainerItems(Type t, uint64_t& outItems) noexcept
+{
+    uint32_t n = 0;
+    const bool ok = (t == Type::Array) ? ReadArrayHeader(n) : ReadMapHeader(n);
+    outItems = (t == Type::Array) ? n : static_cast<uint64_t>(n) * 2u;
+    return ok;
+}
+
+bool Reader::SkipValue() noexcept
+{
+    // pending[i] = values still owed by the (i+1)-th open container.
+    uint64_t pending[kMaxNesting];
+    uint32_t depth = 0;
+    for (;;)
+    {
+        const Type t = Peek();
+        if (t == Type::Array || t == Type::Map)
+        {
+            uint64_t items = 0;
+            if (depth == kMaxNesting || !ReadContainerItems(t, items))
+            {
+                return false;
+            }
+            if (items != 0)
+            {
+                pending[depth++] = items;
+                continue;
+            }
+        }
+        else if (!SkipScalar(t))
+        {
+            return false;
+        }
+        // One value finished. Close every container it completes.
+        while (depth != 0 && --pending[depth - 1] == 0)
+        {
+            --depth;
+        }
+        if (depth == 0)
+        {
+            return true;
+        }
     }
 }
 

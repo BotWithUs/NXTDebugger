@@ -35,6 +35,27 @@ const char *SkillName(int typeId)
 
 // KeyLine for an optional id field, rendering "(none)" for the -1 sentinel the
 // wire uses (followingIndex, spotAnimId).
+// Raw v21 facing in client units (16384 per turn); see PROTOCOL.md §2.8.
+// "(unknown)" for the 0xFFFF sentinel, and an explicit flag for any value the
+// producer's invariant says cannot appear.
+void KeyLineFacing(uint16_t v)
+{
+    char buf[24];
+    if (v == nxt::ipc::kOrientationUnknown)
+    {
+        std::snprintf(buf, sizeof(buf), "(unknown)");
+    }
+    else if (v > nxt::ipc::kOrientationMask)
+    {
+        std::snprintf(buf, sizeof(buf), "BAD %u", unsigned(v));
+    }
+    else
+    {
+        std::snprintf(buf, sizeof(buf), "%u", unsigned(v));
+    }
+    theme::KeyLine("facing", buf);
+}
+
 void KeyLineId(const char *label, int id)
 {
     char buf[24];
@@ -137,6 +158,7 @@ void DrawCombatCard(const nxt::ipc::LocalPlayer &self)
     std::snprintf(stance, sizeof(stance), "%d", self.stanceId);
     theme::KeyLine("stance", stance);
     KeyLineId("spot anim", self.spotAnimId);
+    KeyLineFacing(self.orientation);
     theme::EndCard();
 }
 

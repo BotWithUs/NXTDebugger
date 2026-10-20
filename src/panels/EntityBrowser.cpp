@@ -95,19 +95,42 @@ void IntOrDash(int v)
     }
 }
 
+// Raw v21 facing (PROTOCOL.md §2.8, "Entity orientation"). Shown in client
+// units, not degrees: the compass convention is not pinned yet, and a raw
+// number is what a reader compares against the wire anyway. The 0xFFFF
+// sentinel renders as a dash; anything else above 0x3FFF breaks the producer's
+// value-domain invariant and is flagged rather than printed as an angle.
+void OrientationCell(uint16_t v)
+{
+    if (v == nxt::ipc::kOrientationUnknown)
+    {
+        ImGui::TextDisabled("—");
+    }
+    else if (v > nxt::ipc::kOrientationMask)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kBad));
+        ImGui::Text("BAD %u", unsigned(v));
+        ImGui::PopStyleColor();
+    }
+    else
+    {
+        ImGui::Text("%u", unsigned(v));
+    }
+}
+
 void NpcsTab(app::App &a, const nxt::ipc::Snapshot &s)
 {
     static FilterBuf fb;
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("npcs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("npcs", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                    | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Idx", "Type", "Name", "Tile", "HP", "Anim", "Gfx", "Stance" };
-    TableHeader(cols, 8);
+    const char *cols[] = { "Idx", "Type", "Name", "Tile", "HP", "Anim", "Gfx", "Stance", "Facing" };
+    TableHeader(cols, 9);
 
     for (uint32_t i = 0; i < s.npcCount; ++i)
     {
@@ -139,6 +162,7 @@ void NpcsTab(app::App &a, const nxt::ipc::Snapshot &s)
         ImGui::TableSetColumnIndex(5); ImGui::Text("%d", n.animationId);
         ImGui::TableSetColumnIndex(6); IntOrDash(n.spotAnimId);
         ImGui::TableSetColumnIndex(7); ImGui::Text("%d", n.stanceId);
+        ImGui::TableSetColumnIndex(8); OrientationCell(n.orientation);
     }
     ImGui::EndTable();
 }
@@ -149,13 +173,13 @@ void PlayersTab(const nxt::ipc::Snapshot &s)
     DrawFilter(fb);
     char buf[64];
 
-    if (!ImGui::BeginTable("plyrs", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
+    if (!ImGui::BeginTable("plyrs", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY
                                      | ImGuiTableFlags_BordersInnerH))
     {
         return;
     }
-    const char *cols[] = { "Idx", "Combat", "Tile", "Anim", "Gfx", "Stance", "Flags" };
-    TableHeader(cols, 7);
+    const char *cols[] = { "Idx", "Combat", "Tile", "Anim", "Gfx", "Stance", "Flags", "Facing" };
+    TableHeader(cols, 8);
 
     for (uint32_t i = 0; i < s.playerCount; ++i)
     {
@@ -175,6 +199,7 @@ void PlayersTab(const nxt::ipc::Snapshot &s)
         {
             theme::Pill("moving", theme::kInfo);
         }
+        ImGui::TableSetColumnIndex(7); OrientationCell(p.orientation);
     }
     ImGui::EndTable();
 }
