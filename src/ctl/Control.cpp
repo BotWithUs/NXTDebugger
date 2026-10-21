@@ -28,6 +28,7 @@ bool CmdAttach(app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdDetach(app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdQuit  (app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdHelp  (app::App &, const JsonValue &, JsonValue &, std::string &);
+bool CmdScene (app::App &, const JsonValue &, JsonValue &, std::string &);
 
 struct CommandEntry
 {
@@ -38,6 +39,7 @@ struct CommandEntry
 
 constexpr CommandEntry kCommands[] = {
     { "status",  CmdStatus,  "status" },
+    { "scene",   CmdScene,   "scene  (self, npcs, projectiles from the snapshot)" },
     { "tree",    CmdTree,    "tree {iface, comp?}" },
     { "comp",    CmdComp,    "comp {iface, comp, sub?}" },
     { "vars",    CmdVars,    "vars {varp?, varbit?, varc?, varcstr?}  (int or [ints])" },
@@ -221,6 +223,101 @@ void PutSnapshot(app::App &a, JsonValue &out)
         Push(open, std::move(e));
     }
     Put(out, "open_ifaces", std::move(open));
+}
+
+JsonValue SceneSelf(const nxt::ipc::LocalPlayer &p)
+{
+    constexpr int32_t kConstitution = 3;
+    constexpr int32_t kPrayer       = 5;
+    JsonValue self = JObj();
+    Put(self, "x", JInt(p.tileX));
+    Put(self, "y", JInt(p.tileY));
+    Put(self, "plane", JInt(p.plane));
+    Put(self, "anim", JInt(p.animationId));
+    Put(self, "spot_anim", JInt(p.spotAnimId));
+    Put(self, "target", JInt(p.targetIndex));
+    const uint32_t skills = std::min<uint32_t>(p.skillCount, nxt::ipc::kSkillCap);
+    for (uint32_t i = 0; i < skills; ++i)
+    {
+        const nxt::ipc::SkillEntry &k = p.skills[i];
+        if (k.typeId == kConstitution)
+        {
+            Put(self, "constitution", JInt(k.boostedLevel));
+        }
+        else if (k.typeId == kPrayer)
+        {
+            Put(self, "prayer", JInt(k.boostedLevel));
+        }
+    }
+    return self;
+}
+
+JsonValue SceneNpcs(app::App &a, const nxt::ipc::Snapshot &s)
+{
+    JsonValue      npcs  = JArr();
+    const uint32_t count = std::min<uint32_t>(s.npcCount, nxt::ipc::kNpcCap);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const nxt::ipc::NpcEntry &n    = s.npcs[i];
+        const char               *name = a.gameval.NameForCacheType("npc", n.typeId);
+        JsonValue e = JObj();
+        Put(e, "index", JInt(n.serverIndex));
+        Put(e, "type", JInt(n.typeId));
+        Put(e, "name", JStr(name ? name : ""));
+        Put(e, "x", JInt(n.tileX));
+        Put(e, "y", JInt(n.tileY));
+        Put(e, "hp", JInt(n.hp));
+        Put(e, "max_hp", JInt(n.maxHp));
+        Put(e, "anim", JInt(n.animationId));
+        Put(e, "spot_anim", JInt(n.spotAnimId));
+        Put(e, "following", JInt(n.followingIndex));
+        Push(npcs, std::move(e));
+    }
+    return npcs;
+}
+
+JsonValue SceneProjectiles(const nxt::ipc::Snapshot &s)
+{
+    JsonValue      out   = JArr();
+    const uint32_t count = std::min<uint32_t>(s.projectileCount, nxt::ipc::kProjectileCap);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const nxt::ipc::ProjectileEntry &p = s.projectiles[i];
+        JsonValue e = JObj();
+        Put(e, "gfx", JInt(p.projectileId));
+        Put(e, "src", JInt(p.sourceIndex));
+        Put(e, "dst", JInt(p.targetIndex));
+        Put(e, "from_x", JInt(p.startTileX));
+        Put(e, "from_y", JInt(p.startTileY));
+        Put(e, "to_x", JInt(p.endTileX));
+        Put(e, "to_y", JInt(p.endTileY));
+        Put(e, "start", JInt(p.startCycle));
+        Put(e, "end", JInt(p.endCycle));
+        Push(out, std::move(e));
+    }
+    return out;
+}
+
+// Read-only fight logging: the snapshot's self, NPC and projectile blocks.
+bool CmdScene(app::App &a, const JsonValue &, JsonValue &out, std::string &err)
+{
+    const nxt::ipc::Snapshot *snap = wire::CurrentSnapshot(a.session);
+    if (!snap)
+    {
+        err = "not attached";
+        return false;
+    }
+    Put(out, "server_tick", JInt(snap->serverTick));
+    Put(out, "game_cycle", JInt(snap->gameCycle));
+    if (snap->gameState != kGameStateInGame)
+    {
+        Put(out, "self", JNull());
+        return true;
+    }
+    Put(out, "self", SceneSelf(snap->self));
+    Put(out, "npcs", SceneNpcs(a, *snap));
+    Put(out, "projectiles", SceneProjectiles(*snap));
+    return true;
 }
 
 bool CmdStatus(app::App &a, const JsonValue &, JsonValue &out, std::string &)

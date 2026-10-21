@@ -48,6 +48,7 @@ constexpr const char *kReadOnlyMethods[] = {
     "get_varp", "get_varps", "get_varc_int", "get_varcs_int", "get_varc_string",
     "get_varcs_string", "get_obj_vars",
     "query_spot_anims", "query_world_map_elements", "_debug.entity_facing",
+    "query_entities", "get_local_player", "query_inventories",
     "debug_draw_list", "debug_draw_stats", "debug_draw_probe_pixels",
 };
 
