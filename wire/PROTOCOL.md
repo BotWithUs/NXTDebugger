@@ -1453,7 +1453,7 @@ Additive over the pipe; every component map carries them:
 | `visible` | bool | The component's own visibility: its slot flag byte is 0. |
 | `visible_global` | bool | Visible at every level up to a root, crossing into the host of a mounted sub-interface, with each interface loaded. "On screen." |
 | `slot_flags` | int | The raw u8 behind `visible`; -1 when no slot was found (not visible) or the channel cannot read it. |
-| `parent_global` | int | `(iface << 16) | comp` of the parent the client walks next, -1 if none. |
+| `parent_global` | int | `(iface << 16) \| comp` of the parent the client walks next, -1 if none. |
 | `scrollable` | bool | True only on a Layer (category 1). |
 | `scroll_x`, `scroll_y` | int | Clamped to `[0, max(scroll_w, w) - w]`; 0 on non-layers. |
 | `scroll_w`, `scroll_h` | int | Content size; 0 on non-layers. |
@@ -1463,6 +1463,17 @@ every category, from the client's own visibility byte, and `-1` only for "not
 found" (`iface == -1`) or a client channel without the offsets. Before, it was a
 text-region flag that read `-1` on every category without text (and was wrong
 for at least the run-orb text). `hidden == 1` still means hidden.
+
+`find_component_at` returns only components that are on screen: it skips every
+node whose `visible_global` is false, and with it everything that node contains.
+
+**On a client channel without the visibility offsets** (today: the beta
+channel, whose offsets for these reads are not established), every component
+reports `slot_flags = -1`, `hidden = -1`, `visible = true`,
+`visible_global = true` and `parent_global = -1`, and `scrollable = false` with
+zero scroll values. The agent never reads the underived bytes; the values are a
+documented "unknown", which keeps every component pickable and visible to a
+consumer filter, as before v24.
 
 ---
 
