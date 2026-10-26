@@ -48,26 +48,26 @@ void CheckStr(const char *what, const char *got, const char *want)
     }
 }
 
-// Runtime echo of the v23 figures, so the test log names the numbers the
+// Runtime echo of the v24 figures, so the test log names the numbers the
 // brief and PROTOCOL.md quote. The static_asserts in ProtocolDocPins.h are the
 // gate; these make the result readable.
 void TestLayoutPins()
 {
     using nxt::ipc::Snapshot;
-    CheckEq("kProtocolVersion", nxt::ipc::kProtocolVersion, 23);
-    CheckEq("sizeof(Snapshot)", sizeof(Snapshot), 411832);
-    CheckEq("offsetof(openIfaces)", offsetof(Snapshot, openIfaces), 320384);
-    CheckEq("offsetof(openIfaceFlags)", offsetof(Snapshot, openIfaceFlags), 321408);
+    CheckEq("kProtocolVersion", nxt::ipc::kProtocolVersion, 24);
+    CheckEq("sizeof(Snapshot)", sizeof(Snapshot), 452800);
+    CheckEq("offsetof(openIfaces)", offsetof(Snapshot, openIfaces), 361352);
+    CheckEq("offsetof(openIfaceFlags)", offsetof(Snapshot, openIfaceFlags), 362376);
     CheckEq("sizeof(openIfaceFlags)", sizeof(Snapshot::openIfaceFlags), nxt::ipc::kOpenIfaceCap);
-    CheckEq("offsetof(_padAfterOpenIfaces)", offsetof(Snapshot, _padAfterOpenIfaces), 321664);
-    CheckEq("offsetof(groundItemCount)", offsetof(Snapshot, groundItemCount), 321668);
-    CheckEq("offsetof(projectileCount)", offsetof(Snapshot, projectileCount), 338056);
-    CheckEq("offsetof(gameCycle)", offsetof(Snapshot, gameCycle), 346252);
-    CheckEq("offsetof(dynRegion)", offsetof(Snapshot, dynRegion), 346256);
-    CheckEq("offsetof(dynChunks)", offsetof(Snapshot, dynChunks), 346296);
-    CheckEq("kSnapshotOff1", nxt::ipc::kSnapshotOff1, 411904);
-    CheckEq("kRingOff", nxt::ipc::kRingOff, 823744);
-    CheckEq("kRegionSize", nxt::ipc::kRegionSize, 954880);
+    CheckEq("offsetof(_padAfterOpenIfaces)", offsetof(Snapshot, _padAfterOpenIfaces), 362632);
+    CheckEq("offsetof(groundItemCount)", offsetof(Snapshot, groundItemCount), 362636);
+    CheckEq("offsetof(projectileCount)", offsetof(Snapshot, projectileCount), 379024);
+    CheckEq("offsetof(gameCycle)", offsetof(Snapshot, gameCycle), 387220);
+    CheckEq("offsetof(dynRegion)", offsetof(Snapshot, dynRegion), 387224);
+    CheckEq("offsetof(dynChunks)", offsetof(Snapshot, dynChunks), 387264);
+    CheckEq("kSnapshotOff1", nxt::ipc::kSnapshotOff1, 452864);
+    CheckEq("kRingOff", nxt::ipc::kRingOff, 905664);
+    CheckEq("kRegionSize", nxt::ipc::kRegionSize, 1036800);
     CheckEq("kOpenIfaceTypeMask", nxt::ipc::kOpenIfaceTypeMask, 0x07);
     CheckEq("kOpenIfaceFlagClientOpened", nxt::ipc::kOpenIfaceFlagClientOpened, 0x08);
 }
