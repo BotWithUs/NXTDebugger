@@ -105,8 +105,8 @@ static_assert(offsetof(LocalPlayer, orientation) == 32);
 static_assert(offsetof(LocalPlayer, _orientationPad) == 34);
 static_assert(offsetof(LocalPlayer, skillCount) == 36);
 static_assert(offsetof(LocalPlayer, skills) == 40);
-static_assert(offsetof(LocalPlayer, runEnergy) == 552);
-static_assert(offsetof(LocalPlayer, runWeight) == 556);
+static_assert(offsetof(LocalPlayer, runEnergy) == 552);   // v24
+static_assert(offsetof(LocalPlayer, runWeight) == 556);   // v24
 
 // --- PROTOCOL.md §2.8 entries ---
 // Orientation value domain (§2.8 "Entity orientation").
@@ -127,8 +127,8 @@ static_assert(offsetof(NpcEntry, hp) == 24);
 static_assert(offsetof(NpcEntry, maxHp) == 28);
 static_assert(offsetof(NpcEntry, spotAnimId) == 32);
 static_assert(offsetof(NpcEntry, orientation) == 36);
-static_assert(offsetof(NpcEntry, activeTypeId) == 40);
-static_assert(offsetof(NpcEntry, combatLevel) == 44);
+static_assert(offsetof(NpcEntry, activeTypeId) == 40);   // v24
+static_assert(offsetof(NpcEntry, combatLevel) == 44);    // v24
 static_assert(sizeof(PlayerEntry) == 48);
 static_assert(offsetof(PlayerEntry, serverIndex) == 0);
 static_assert(offsetof(PlayerEntry, tileX) == 4);
@@ -141,7 +141,9 @@ static_assert(offsetof(PlayerEntry, stanceId) == 16);
 static_assert(offsetof(PlayerEntry, combatLevel) == 20);
 static_assert(offsetof(PlayerEntry, spotAnimId) == 24);
 static_assert(offsetof(PlayerEntry, orientation) == 28);
-static_assert(offsetof(PlayerEntry, name) == 32);
+static_assert(offsetof(PlayerEntry, name) == 32);        // v24, char[16]
+static_assert(sizeof(PlayerEntry::name) == 16);
+static_assert(kFlagNameTruncated == 0x02);                // v24
 static_assert(sizeof(LocationEntry) == 24);
 static_assert(offsetof(LocationEntry, typeId) == 0);
 static_assert(offsetof(LocationEntry, interactId) == 4);

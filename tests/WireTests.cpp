@@ -70,6 +70,17 @@ void TestLayoutPins()
     CheckEq("kRegionSize", nxt::ipc::kRegionSize, 1036800);
     CheckEq("kOpenIfaceTypeMask", nxt::ipc::kOpenIfaceTypeMask, 0x07);
     CheckEq("kOpenIfaceFlagClientOpened", nxt::ipc::kOpenIfaceFlagClientOpened, 0x08);
+    // v24 entity rows.
+    CheckEq("offsetof(players)", offsetof(Snapshot, players), 49744);
+    CheckEq("sizeof(PlayerEntry)", sizeof(nxt::ipc::PlayerEntry), 48);
+    CheckEq("offsetof(PlayerEntry, name)", offsetof(nxt::ipc::PlayerEntry, name), 32);
+    CheckEq("kFlagNameTruncated", nxt::ipc::kFlagNameTruncated, 0x02);
+    CheckEq("sizeof(NpcEntry)", sizeof(nxt::ipc::NpcEntry), 48);
+    CheckEq("offsetof(NpcEntry, activeTypeId)", offsetof(nxt::ipc::NpcEntry, activeTypeId), 40);
+    CheckEq("offsetof(NpcEntry, combatLevel)", offsetof(nxt::ipc::NpcEntry, combatLevel), 44);
+    CheckEq("sizeof(LocalPlayer)", sizeof(nxt::ipc::LocalPlayer), 560);
+    CheckEq("offsetof(LocalPlayer, runEnergy)", offsetof(nxt::ipc::LocalPlayer, runEnergy), 552);
+    CheckEq("offsetof(LocalPlayer, runWeight)", offsetof(nxt::ipc::LocalPlayer, runWeight), 556);
 }
 
 void CheckFlags(const char *name, uint8_t raw, int wantType, bool wantCs2, bool wantModal,
