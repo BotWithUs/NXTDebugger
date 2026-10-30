@@ -334,6 +334,33 @@ void DrawSummaryStats(app::App &a)
     theme::HeroStat("rpcs last refresh", rpcs, theme::kText);
 }
 
+// How this session's agent takes entity highlights: one batch per layer, or
+// (an agent DLL without entity batch items) one highlight_entity per entity.
+void DrawAgentMode(const app::App &a)
+{
+    if (!a.rpc.IsConnected())
+    {
+        return;
+    }
+    const overlay::AgentEntityMode mode = a.layers.agentMode;
+    const char *title = overlay::AgentModeTitle(mode);
+    switch (mode)
+    {
+    case overlay::AgentEntityMode::Unknown:
+        theme::Pill(title, theme::kPanelDeep, theme::kTextDim);
+        break;
+    case overlay::AgentEntityMode::Batch:
+        theme::Pill(title, Soft(theme::kGood), theme::kGood);
+        break;
+    case overlay::AgentEntityMode::PerEntity:
+        theme::Pill(title, Soft(theme::kWarn), theme::kWarn);
+        ImGui::TextDisabled("Older agent DLL: one call per entity, up to %u per refresh. "
+                            "Locs and ground items need the newer DLL.",
+                            overlay::kMaxEntityCallsPerRefresh);
+        break;
+    }
+}
+
 void DrawSummaryCard(app::App &a)
 {
     if (!theme::BeginCard("ly.sum", "LAYERS"))
@@ -348,6 +375,7 @@ void DrawSummaryCard(app::App &a)
     ImGui::TextUnformatted(!a.session.IsOpen() ? "Attach to a client to draw layers."
                          : !a.rpc.IsConnected() ? "Waiting for the agent's RPC pipe."
                          : isLive ? "Drawing in the game." : "Turn a layer on to draw it in the game.");
+    DrawAgentMode(a);
     ImGui::Spacing();
     DrawSummaryStats(a);
     ImGui::Spacing();

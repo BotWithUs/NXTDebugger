@@ -263,4 +263,67 @@ struct BatchResult
 BatchResult ClassifyBatchReply(rpc::CallStatus status, const std::vector<uint8_t> &reply,
                                uint32_t itemCount);
 
+// --- per-entity fallback -----------------------------------------------------
+//
+// Agents released before feat/overlay-loc-ground refuse `kind: "entity"` batch
+// items with "unknown kind (want line, rect, ellipse, poly, text or component)"
+// but do answer the single highlight_entity RPC for npc / player / self. On
+// that refusal the session drops to one highlight_entity per draw, capped per
+// refresh so a crowd cannot flood the pipe. Detected once per connection and
+// detected again after a reconnect or a Retry.
+
+enum class AgentEntityMode : uint8_t
+{
+    Unknown,     // no layer batch answered yet on this connection
+    Batch,       // debug_draw_set_batch carries entity items
+    PerEntity,   // old agent: one highlight_entity call per draw
+};
+
+const char *AgentModeToken(AgentEntityMode m);   // "unknown", "batch", "per_entity"
+const char *AgentModeTitle(AgentEntityMode m);   // "agent: batch entities", ...
+
+// highlight_entity calls across every layer per refresh in PerEntity mode;
+// the rest wait for the next refresh (they are still in the diff then).
+constexpr uint32_t kMaxEntityCallsPerRefresh = 64;
+
+// What a per-entity agent's loc / ground layer is latched with.
+constexpr const char *kNeedsNewerAgentMessage =
+    "needs the newer agent DLL (feat/overlay-loc-ground)";
+
+// The session's mode after one layer batch reply. An "unknown kind" refusal
+// means an agent without entity batch items: PerEntity. A reply that stored
+// something settles Batch. Anything else (transport, another refusal) leaves
+// the mode as it was.
+AgentEntityMode ModeAfterBatch(AgentEntityMode current, const BatchResult &res);
+
+// The first min(ioBudget, toSend.size()) indices of toSend (nearest first, the
+// diff's order); ioBudget is reduced by what was taken.
+std::vector<size_t> TakeCallBudget(const std::vector<size_t> &toSend, uint32_t &ioBudget);
+
+// highlight_entity params for one draw: the batch item without `kind`.
+bool EncodeHighlightEntity(LayerId id, const DesiredDraw &d, uint32_t ttlMs,
+                           std::vector<uint8_t> &out);
+
+enum class EntityCallOutcome : uint8_t
+{
+    Applied,
+    Capacity,    // store / text slots full: shared, frees up on its own
+    Refused,     // the agent will not draw this entry
+    Transport,   // no reply; nothing known
+};
+
+struct EntityCallResult
+{
+    EntityCallOutcome outcome = EntityCallOutcome::Transport;
+    std::string       error;
+};
+
+EntityCallResult ClassifyEntityReply(rpc::CallStatus status, const std::vector<uint8_t> &reply);
+
+// The message a refused layer is latched with. A loc / ground layer refused
+// in PerEntity mode is an agent that predates loc / ground_item selectors, so
+// it names the DLL needed instead of the agent's raw "needs npc, player or
+// self" error.
+std::string RefusalMessage(LayerId id, AgentEntityMode mode, const std::string &agentError);
+
 }

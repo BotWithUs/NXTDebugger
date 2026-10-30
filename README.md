@@ -96,9 +96,17 @@ in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
 - **Locs** draw their real footprint: the debugger reads `sizeX`/`sizeY` from
   the cache loc definition (swapped for rotation 1 and 3) and sends it as
   `w`/`h`. With the cache closed, locs draw one tile.
-- An agent that refuses a layer's entries (one without entity batch entries or
-  loc / ground-item support) gets the layer latched off with the agent's own
-  error, and no retries, until you re-tick it, press Retry, or reconnect.
+- **Older agent DLLs** (released before `feat/overlay-loc-ground`) refuse
+  entity batch entries as an unknown kind. The first such refusal switches the
+  session to per-entity mode: NPCs, players and self go out as one
+  `highlight_entity` call each, still only for adds and changes, at most 64
+  calls per refresh (the rest go out on the next one). Locs and ground items
+  are tried once that way and, when refused, latched with "needs the newer
+  agent DLL". The panel shows the mode ("agent: batch entities" / "agent:
+  legacy, per-entity"); it is detected again after a reconnect or a Retry.
+- An agent that refuses a layer's entries otherwise gets the layer latched off
+  with the agent's own error, and no retries, until you re-tick it, press
+  Retry, or reconnect.
 - **Interfaces** is the existing transparent overlay window that paints the
   Interfaces panel's selected interface.
 
@@ -181,7 +189,7 @@ when no session is bound. The offline commands (`gameval`, `cache`, `cs2`,
 | `xref` | `kind` (`varbit`\|`varp`\|`const`), `id`, `dir?` | `{status: "building", files_done, files_total}` until the index is ready (the first call starts it), then `{status: "ready", total, scripts[]}`. |
 | `gameval` | `kind`, then `id`, `name` (exact) or `search` (substring); `max?` (200) | an id gives `{id, name}`; a name or search gives `{total, matches[]}`. Kinds: `item obj npc loc if interface component varp varbit varc struct enum param inv seq sprite graphic model dbrow quest`. `component` takes `id` (the hash) or `iface` + `comp`. |
 | `cache` | `type` (`npc item loc seq varbit enum struct inv param quest`), `id` | `{found, gameval, definition}`, decoded by NXTCache. The local cache opens on first use, and `NXTCache.dll` must sit beside the exe or on PATH. |
-| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `label_budget`, `iface` (layers: `npc` `player` `self` `loc` `ground`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`. A request with one bad argument applies none of them. |
+| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `label_budget`, `iface` (layers: `npc` `player` `self` `loc` `ground`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`, `agent_mode` (`unknown` \| `batch` \| `per_entity`). A request with one bad argument applies none of them. |
 | `attach` | `pid` or `auto: true` | binds the observer session (the Attach panel's button); nothing is sent to the game |
 | `detach` | none | drops the session |
 | `quit` | none | closes this debugger instance after the reply |

@@ -210,6 +210,7 @@ void Describe(const app::App &a, JsonValue &out)
     Put(out, "labels_shown", JInt(a.layers.labels.given));
     Put(out, "labels_wanted", JInt(a.layers.labels.wanted));
     Put(out, "rpcs_last_refresh", JInt(a.layers.rpcsLastRefresh));
+    Put(out, "agent_mode", JStr(overlay::AgentModeToken(a.layers.agentMode)));
     Put(out, "rpc_connected", JBool(a.rpc.IsConnected()));
 }
 

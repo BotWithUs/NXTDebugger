@@ -19,8 +19,11 @@ namespace nxtdbg::app { struct App; }
 //   * unticking a layer clears exactly its keys, at once;
 //   * detach and app exit clear every dbg: key it sent. It never calls
 //     debug_draw_clear_all -- the host and scripts share the overlay;
-//   * a layer the agent refuses (an agent without entity batch entries or
-//     loc / ground_item support) is latched off with the agent's own error
+//   * an agent without entity batch entries (refuses them as "unknown kind")
+//     drops the session to one highlight_entity per draw, at most
+//     kMaxEntityCallsPerRefresh per refresh; its loc / ground layers latch
+//     with "needs the newer agent DLL" once it refuses those selectors;
+//   * a layer the agent refuses is latched off with the agent's own error
 //     and not retried until the user re-ticks it, retries, or reconnects.
 // ===========================================================================
 
@@ -45,7 +48,11 @@ struct LayerSyncState
     uint64_t     lastRefreshMs   = 0;
     bool         isRefreshForced = false;
     bool         wasConnected    = false;
-    LabelTally   labels;                // "labels N of M" from the last refresh
+    uint32_t     connectedPid    = 0;   // pid the agent mode was detected on
+    // Batch, or per-entity for an agent without entity batch items. Detected
+    // on the first layer batch of a connection; reset on reconnect and Retry.
+    AgentEntityMode agentMode    = AgentEntityMode::Unknown;
+    LabelTally   labels;               // "labels N of M" from the last refresh
     uint32_t     rpcsLastRefresh = 0;
     bool         wasCacheOpen    = false;
     // Memoised cache lookups. Names key on (kind << 32 | id); loc sizes on id.
@@ -66,7 +73,8 @@ void ClearAllLayers(app::App &a);
 // Call after any settings edit (panel, ctl): sanitises, refreshes next frame.
 void NotifyLayerConfigChanged(LayerSyncState &st);
 
-// Re-arm a latched layer (the panel's Retry button, `layers retry=...`).
+// Re-arm a latched layer (the panel's Retry button, `layers retry=...`) and
+// detect the agent mode again.
 void RetryLayer(LayerSyncState &st, LayerId id);
 
 uint32_t TotalSentDraws(const LayerSyncState &st);

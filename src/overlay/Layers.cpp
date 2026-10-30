@@ -26,6 +26,7 @@ constexpr int     kTtlIntervals    = 5;   // TTL = five refresh intervals
 constexpr int     kResendMargin    = 2;   // re-send two intervals before expiry
 constexpr int     kDrawThickness   = 2;
 constexpr size_t  kBatchBufBytes   = 256 * 1024;
+constexpr size_t  kEntityBufBytes  = 4 * 1024;   // one highlight_entity map
 
 struct LayerInfo
 {
@@ -305,10 +306,10 @@ void AddSelector(LayerId id, const LayerCandidate &c, rpc::ParamBuilder &p)
     }
 }
 
-// One batch item in the settled shape: kind "entity" + highlight_entity params.
-void BuildEntityItem(LayerId id, const DesiredDraw &d, uint32_t ttlMs, rpc::ParamBuilder &p)
+// highlight_entity params. A batch item in the settled shape is the same map
+// behind kind "entity".
+void BuildEntityParams(LayerId id, const DesiredDraw &d, uint32_t ttlMs, rpc::ParamBuilder &p)
 {
-    p.AddStr("kind", "entity");
     p.AddStr("key", d.key.c_str());
     AddSelector(id, d.candidate, p);
     if (d.candidate.w > 0 && d.candidate.h > 0)
@@ -358,6 +359,12 @@ bool ReadBatchCounts(const std::vector<uint8_t> &reply, BatchResult &out)
         }
     }
     return true;
+}
+
+// "draw store full (512 commands)", "draw text slots full (64)".
+bool IsCapacityError(const std::string &error)
+{
+    return error.find(" full") != std::string::npos;
 }
 
 }   // namespace
@@ -729,7 +736,8 @@ bool EncodeLayerBatch(LayerId id, const std::vector<DesiredDraw> &want,
     for (size_t i : idx)
     {
         rpc::ParamBuilder item;
-        BuildEntityItem(id, want[i], ttlMs, item);
+        item.AddStr("kind", "entity");
+        BuildEntityParams(id, want[i], ttlMs, item);
         rpc::WriteParamMap(w, item);
     }
     if (w.Overflowed() || idx.size() > static_cast<size_t>(kMaxLayerCount))
@@ -792,8 +800,7 @@ BatchResult ClassifyBatchReply(rpc::CallStatus status, const std::vector<uint8_t
     // is shared with every other connection and frees up on its own, so a
     // batch refused for it is Partial and retried -- only a refusal of the
     // entries themselves latches the layer off.
-    else if (res.count == 0 && res.dropped >= itemCount
-             && res.error.find(" full") == std::string::npos)
+    else if (res.count == 0 && res.dropped >= itemCount && !IsCapacityError(res.error))
     {
         res.outcome = BatchOutcome::Rejected;
     }
@@ -802,6 +809,99 @@ BatchResult ClassifyBatchReply(rpc::CallStatus status, const std::vector<uint8_t
         res.outcome = BatchOutcome::Partial;
     }
     return res;
+}
+
+// --- per-entity fallback ----------------------------------------------------
+
+const char *AgentModeToken(AgentEntityMode m)
+{
+    switch (m)
+    {
+    case AgentEntityMode::Unknown:   return "unknown";
+    case AgentEntityMode::Batch:     return "batch";
+    case AgentEntityMode::PerEntity: return "per_entity";
+    }
+    return "unknown";
+}
+
+const char *AgentModeTitle(AgentEntityMode m)
+{
+    switch (m)
+    {
+    case AgentEntityMode::Unknown:   return "agent: not probed yet";
+    case AgentEntityMode::Batch:     return "agent: batch entities";
+    case AgentEntityMode::PerEntity: return "agent: legacy, per-entity";
+    }
+    return "agent: not probed yet";
+}
+
+AgentEntityMode ModeAfterBatch(AgentEntityMode current, const BatchResult &res)
+{
+    if (res.outcome == BatchOutcome::Rejected
+        && res.error.find("unknown kind") != std::string::npos)
+    {
+        return AgentEntityMode::PerEntity;
+    }
+    if (res.outcome == BatchOutcome::Applied || res.outcome == BatchOutcome::Partial)
+    {
+        return AgentEntityMode::Batch;
+    }
+    return current;
+}
+
+std::vector<size_t> TakeCallBudget(const std::vector<size_t> &toSend, uint32_t &ioBudget)
+{
+    const size_t n = std::min(toSend.size(), static_cast<size_t>(ioBudget));
+    ioBudget -= static_cast<uint32_t>(n);
+    return std::vector<size_t>(toSend.begin(), toSend.begin() + static_cast<ptrdiff_t>(n));
+}
+
+bool EncodeHighlightEntity(LayerId id, const DesiredDraw &d, uint32_t ttlMs,
+                           std::vector<uint8_t> &out)
+{
+    out.assign(kEntityBufBytes, 0);
+    Writer w(out.data(), out.size());
+    rpc::ParamBuilder p;
+    BuildEntityParams(id, d, ttlMs, p);
+    rpc::WriteParamMap(w, p);
+    if (w.Overflowed())
+    {
+        out.clear();
+        return false;
+    }
+    out.resize(w.BytesWritten());
+    return true;
+}
+
+EntityCallResult ClassifyEntityReply(rpc::CallStatus status, const std::vector<uint8_t> &reply)
+{
+    EntityCallResult res;
+    if (status == rpc::CallStatus::Ok)
+    {
+        res.outcome = EntityCallOutcome::Applied;
+        return res;
+    }
+    if (status != rpc::CallStatus::HandlerError)
+    {
+        res.outcome = EntityCallOutcome::Transport;
+        res.error   = rpc::StatusText(status);
+        return res;
+    }
+    Reader r(reply.data(), reply.size());
+    res.error   = rpc::ValueToText(r);
+    res.outcome = IsCapacityError(res.error) ? EntityCallOutcome::Capacity
+                                             : EntityCallOutcome::Refused;
+    return res;
+}
+
+std::string RefusalMessage(LayerId id, AgentEntityMode mode, const std::string &agentError)
+{
+    const bool isLocOrGround = id == LayerId::Loc || id == LayerId::Ground;
+    if (mode == AgentEntityMode::PerEntity && isLocOrGround)
+    {
+        return kNeedsNewerAgentMessage;
+    }
+    return agentError.empty() ? std::string("agent refused every entry") : agentError;
 }
 
 }

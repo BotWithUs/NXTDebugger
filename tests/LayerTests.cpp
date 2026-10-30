@@ -1,7 +1,8 @@
 // Layer tests: the pure half of the overlay layers (src/overlay/Layers.cpp) --
 // snapshot collection, filter / distance / cap selection, the dbg: key scheme,
 // the diff against what was sent, label budgeting, the batch encoding the
-// agent reads and the reply classification.
+// agent reads, the reply classification and the per-entity fallback for old
+// agents (mode switch, per-refresh call cap).
 //
 // Same no-framework shape as WireTests.cpp: each CHECK prints what it compared
 // and the exit code is the failure count. Every test drives the production
@@ -345,7 +346,7 @@ void TestSanitize()
 struct ItemView
 {
     std::string kind, key, label;
-    int64_t     loc = -1, x = -1, y = -1, plane = -1, w = -1, h = -1, ttl = -1;
+    int64_t     loc = -1, npc = -1, x = -1, y = -1, plane = -1, w = -1, h = -1, ttl = -1;
     bool        isSelf = false;
 };
 
@@ -379,7 +380,8 @@ void ReadItem(Reader &r, ItemView &v)
         }
         int64_t x = 0;
         r.ReadInt(x);
-        int64_t *slot = key == "loc" ? &v.loc : key == "x" ? &v.x : key == "y" ? &v.y
+        int64_t *slot = key == "loc" ? &v.loc : key == "npc" ? &v.npc
+                      : key == "x" ? &v.x : key == "y" ? &v.y
                       : key == "plane" ? &v.plane : key == "w" ? &v.w : key == "h" ? &v.h
                       : key == "ttl_ms" ? &v.ttl : nullptr;
         if (slot != nullptr)
@@ -483,6 +485,153 @@ void TestClassify()
             static_cast<long long>(BatchOutcome::Transport));
 }
 
+// --- per-entity fallback -----------------------------------------------------------
+
+std::vector<uint8_t> ErrorReply(const char *text)
+{
+    std::vector<uint8_t> out(256);
+    Writer w(out.data(), out.size());
+    w.WriteCStr(text);
+    out.resize(w.BytesWritten());
+    return out;
+}
+
+long long Mode(ov::AgentEntityMode m)
+{
+    return static_cast<long long>(m);
+}
+
+// The exact refusal an agent before feat/overlay-loc-ground gives the batch,
+// both as a per-item drop and as an envelope error.
+constexpr const char *kOldAgentError =
+    "unknown kind (want line, rect, ellipse, poly, text or component)";
+
+void TestModeSwitch()
+{
+    using nxtdbg::rpc::CallStatus;
+    using ov::AgentEntityMode;
+    const ov::BatchResult dropped = ov::ClassifyBatchReply(CallStatus::Ok,
+                                                           Reply(0, 3, kOldAgentError), 3);
+    CheckEq("old agent drop -> per-entity",
+            Mode(ov::ModeAfterBatch(AgentEntityMode::Unknown, dropped)),
+            Mode(AgentEntityMode::PerEntity));
+    const ov::BatchResult envelope = ov::ClassifyBatchReply(CallStatus::HandlerError,
+                                                            ErrorReply(kOldAgentError), 3);
+    CheckEq("old agent envelope error -> per-entity",
+            Mode(ov::ModeAfterBatch(AgentEntityMode::Unknown, envelope)),
+            Mode(AgentEntityMode::PerEntity));
+    const ov::BatchResult applied = ov::ClassifyBatchReply(CallStatus::Ok, Reply(3, 0, nullptr), 3);
+    CheckEq("applied batch -> batch", Mode(ov::ModeAfterBatch(AgentEntityMode::Unknown, applied)),
+            Mode(AgentEntityMode::Batch));
+    const ov::BatchResult full = ov::ClassifyBatchReply(
+        CallStatus::Ok, Reply(1, 2, "draw text slots full (64)"), 3);
+    CheckEq("partial batch -> batch", Mode(ov::ModeAfterBatch(AgentEntityMode::Unknown, full)),
+            Mode(AgentEntityMode::Batch));
+    const ov::BatchResult timeout = ov::ClassifyBatchReply(CallStatus::Timeout, {}, 3);
+    CheckEq("timeout keeps unknown", Mode(ov::ModeAfterBatch(AgentEntityMode::Unknown, timeout)),
+            Mode(AgentEntityMode::Unknown));
+    const ov::BatchResult other = ov::ClassifyBatchReply(
+        CallStatus::Ok, Reply(0, 3, "entity tile must be 0..32767"), 3);
+    CheckEq("other refusal keeps batch", Mode(ov::ModeAfterBatch(AgentEntityMode::Batch, other)),
+            Mode(AgentEntityMode::Batch));
+    CheckStr("mode token per-entity", ov::AgentModeToken(AgentEntityMode::PerEntity),
+             "per_entity");
+    CheckStr("mode title batch", ov::AgentModeTitle(AgentEntityMode::Batch),
+             "agent: batch entities");
+    CheckStr("mode title per-entity", ov::AgentModeTitle(AgentEntityMode::PerEntity),
+             "agent: legacy, per-entity");
+}
+
+void TestCallBudget()
+{
+    std::vector<size_t> toSend;
+    for (size_t i = 0; i < 100; ++i)
+    {
+        toSend.push_back(i);
+    }
+    uint32_t budget = ov::kMaxEntityCallsPerRefresh;
+    const std::vector<size_t> first = ov::TakeCallBudget(toSend, budget);
+    CheckEq("budget: first layer capped at 64", static_cast<long long>(first.size()), 64);
+    CheckEq("budget: nearest first", static_cast<long long>(first.front()), 0);
+    CheckEq("budget: last taken", static_cast<long long>(first.back()), 63);
+    CheckEq("budget: spent", budget, 0);
+    const std::vector<size_t> second = ov::TakeCallBudget({ 0, 1 }, budget);
+    CheckEq("budget: a later layer waits", static_cast<long long>(second.size()), 0);
+    budget = 10;
+    const std::vector<size_t> small = ov::TakeCallBudget({ 4, 7 }, budget);
+    CheckEq("budget: under the cap takes all", static_cast<long long>(small.size()), 2);
+    CheckEq("budget: remainder", budget, 8);
+}
+
+// The rest of a capped layer is still unsent, so the next refresh's diff
+// carries it again: the cap spreads a crowd over refreshes, it drops nothing.
+void TestCallBudgetSpreads()
+{
+    std::vector<DesiredDraw> want;
+    for (int i = 0; i < 100; ++i)
+    {
+        LayerCandidate c = Cand(i, i % 20, "Guard");
+        want.push_back(DesiredDraw{ ov::LayerKey(LayerId::Npc, c), c, "", 0xFFFFAB47u });
+    }
+    SentMap  sent;
+    uint32_t budget = ov::kMaxEntityCallsPerRefresh;
+    ov::LayerDiff d1 = ov::DiffLayer(sent, want, 1000, 1800);
+    ov::CommitSends(sent, want, ov::TakeCallBudget(d1.toSend, budget), 1000);
+    budget = ov::kMaxEntityCallsPerRefresh;
+    ov::LayerDiff d2 = ov::DiffLayer(sent, want, 1600, 1800);
+    CheckEq("spread: second refresh sends the rest", static_cast<long long>(d2.toSend.size()), 36);
+    ov::CommitSends(sent, want, ov::TakeCallBudget(d2.toSend, budget), 1600);
+    CheckEq("spread: all sent after two refreshes", static_cast<long long>(sent.size()), 100);
+}
+
+void TestEntityReplies()
+{
+    using nxtdbg::rpc::CallStatus;
+    using ov::EntityCallOutcome;
+    auto outcome = [](CallStatus st, const std::vector<uint8_t> &r)
+    {
+        return static_cast<long long>(ov::ClassifyEntityReply(st, r).outcome);
+    };
+    CheckEq("entity ok", outcome(CallStatus::Ok, {}),
+            static_cast<long long>(EntityCallOutcome::Applied));
+    CheckEq("entity store full = capacity",
+            outcome(CallStatus::HandlerError, ErrorReply("draw store full (512 commands)")),
+            static_cast<long long>(EntityCallOutcome::Capacity));
+    const ov::EntityCallResult loc = ov::ClassifyEntityReply(
+        CallStatus::HandlerError, ErrorReply("highlight_entity needs npc, player or self"));
+    CheckEq("entity old-agent loc = refused", static_cast<long long>(loc.outcome),
+            static_cast<long long>(EntityCallOutcome::Refused));
+    CheckEq("entity timeout = transport", outcome(CallStatus::Timeout, {}),
+            static_cast<long long>(EntityCallOutcome::Transport));
+    using ov::AgentEntityMode;
+    CheckStr("refusal: legacy loc names the DLL",
+             ov::RefusalMessage(LayerId::Loc, AgentEntityMode::PerEntity, loc.error),
+             "needs the newer agent DLL (feat/overlay-loc-ground)");
+    CheckStr("refusal: legacy ground names the DLL",
+             ov::RefusalMessage(LayerId::Ground, AgentEntityMode::PerEntity, loc.error),
+             "needs the newer agent DLL (feat/overlay-loc-ground)");
+    CheckStr("refusal: legacy npc keeps the agent's error",
+             ov::RefusalMessage(LayerId::Npc, AgentEntityMode::PerEntity, "bad npc"), "bad npc");
+    CheckStr("refusal: batch loc keeps the agent's error",
+             ov::RefusalMessage(LayerId::Loc, AgentEntityMode::Batch, "x"), "x");
+}
+
+void TestEncodeHighlightEntity()
+{
+    LayerCandidate c = Cand(42, 3, "Guard");
+    const DesiredDraw d{ ov::LayerKey(LayerId::Npc, c), c, "Guard", 0xFFFFAB47u };
+    std::vector<uint8_t> body;
+    CheckEq("encode highlight_entity", ov::EncodeHighlightEntity(LayerId::Npc, d, 3000, body), 1);
+    Reader   r(body.data(), body.size());
+    ItemView v;
+    ReadItem(r, v);
+    CheckStr("highlight_entity has no kind", v.kind, "");
+    CheckStr("highlight_entity key", v.key, "dbg:npc:42");
+    CheckEq("highlight_entity npc selector", v.npc, 42);
+    CheckStr("highlight_entity label", v.label, "Guard");
+    CheckEq("highlight_entity ttl", v.ttl, 3000);
+}
+
 }
 
 int main()
@@ -500,6 +649,11 @@ int main()
     TestEncodeLocBatch();
     TestEncodeClear();
     TestClassify();
+    TestModeSwitch();
+    TestCallBudget();
+    TestCallBudgetSpreads();
+    TestEntityReplies();
+    TestEncodeHighlightEntity();
     std::printf("%d failure(s)\n", failures);
     return failures;
 }

@@ -172,25 +172,146 @@ void ApplyBatchResult(LayerRuntime &rt, const Selection &sel, const LayerDiff &d
     }
 }
 
-void SendLayer(app::App &a, LayerId id, const Selection &sel, uint64_t nowMs)
+// One debug_draw_set_batch for the layer's adds / changes. False when the
+// agent refused entity items as an unknown kind: the session is per-entity
+// from now on and this layer's draws go out that way instead.
+bool SendBatch(app::App &a, LayerId id, const Selection &sel, const LayerDiff &diff,
+               uint64_t nowMs)
 {
-    LayerRuntime   &rt   = a.layers.runtime[Idx(id)];
-    const int       rms  = a.layers.config.refreshMs;
-    const LayerDiff diff = DiffLayer(rt.sent, sel.draws, nowMs, ResendAgeMs(rms));
+    LayerSyncState      &st = a.layers;
+    LayerRuntime        &rt = st.runtime[Idx(id)];
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> reply;
+    if (!EncodeLayerBatch(id, sel.draws, diff.toSend, DrawTtlMs(st.config.refreshMs), body))
+    {
+        rt.message = "batch too large to encode";
+        return true;
+    }
+    const rpc::CallStatus status = Call(a, "debug_draw_set_batch", body, reply);
+    const BatchResult     res    = ClassifyBatchReply(status, reply,
+                                                      static_cast<uint32_t>(diff.toSend.size()));
+    st.agentMode = ModeAfterBatch(st.agentMode, res);
+    if (st.agentMode == AgentEntityMode::PerEntity)
+    {
+        return false;
+    }
+    ApplyBatchResult(rt, sel, diff, res, nowMs);
+    return true;
+}
+
+// --- per-entity (agents without entity batch items) ----------------------------
+
+struct EntityRun
+{
+    uint32_t          calls   = 0;
+    uint32_t          applied = 0;
+    uint32_t          refused = 0;   // npc / player / self entries the agent would not draw
+    uint32_t          waiting = 0;   // over the refresh's call budget: next refresh
+    EntityCallOutcome stop    = EntityCallOutcome::Applied;   // Applied: ran to the end
+    std::string       error;         // the first failure's agent / transport text
+};
+
+EntityCallResult SendEntity(app::App &a, LayerId id, const DesiredDraw &d, uint32_t ttlMs)
+{
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> reply;
+    if (!EncodeHighlightEntity(id, d, ttlMs, body))
+    {
+        return EntityCallResult{ EntityCallOutcome::Refused, "highlight_entity params too large" };
+    }
+    return ClassifyEntityReply(Call(a, "highlight_entity", body, reply), reply);
+}
+
+// Refused loc / ground entries latch the layer (this agent has no such
+// selectors); capacity and transport stop it until the next refresh.
+void ApplyEntityRun(LayerRuntime &rt, LayerId id, const EntityRun &run)
+{
+    rt.lastDropped = run.refused;
+    rt.isWarning   = false;
+    rt.message.clear();
+    const bool isAllRefused = run.refused > 0 && run.refused == run.calls;
+    if (run.stop == EntityCallOutcome::Refused || isAllRefused)
+    {
+        rt.isRejected = true;
+        rt.message    = RefusalMessage(id, AgentEntityMode::PerEntity, run.error);
+        return;
+    }
+    if (run.stop == EntityCallOutcome::Transport)
+    {
+        rt.message = run.error;
+        return;
+    }
+    rt.isWarning = true;
+    if (run.stop == EntityCallOutcome::Capacity)
+    {
+        rt.message = "agent store full, retrying next refresh: " + run.error;
+    }
+    else if (run.refused > 0)
+    {
+        rt.message = "agent dropped " + std::to_string(run.refused) + ": " + run.error;
+    }
+    else if (run.waiting > 0)
+    {
+        rt.message = std::to_string(run.waiting) + " more go out next refresh (legacy agent: "
+                   + std::to_string(kMaxEntityCallsPerRefresh) + " calls per refresh)";
+    }
+    else
+    {
+        rt.isWarning = false;
+    }
+}
+
+// One highlight_entity per draw, nearest first, within the refresh's shared
+// call budget. Each applied call is committed on its own, so a stop part-way
+// leaves the sent map true and the rest goes out next refresh.
+void SendPerEntity(app::App &a, LayerId id, const Selection &sel, const LayerDiff &diff,
+                   uint64_t nowMs, uint32_t &ioBudget)
+{
+    LayerRuntime             &rt   = a.layers.runtime[Idx(id)];
+    const uint32_t            ttl  = DrawTtlMs(a.layers.config.refreshMs);
+    const std::vector<size_t> take = TakeCallBudget(diff.toSend, ioBudget);
+    const bool isLocOrGround = id == LayerId::Loc || id == LayerId::Ground;
+    EntityRun run;
+    run.waiting = static_cast<uint32_t>(diff.toSend.size() - take.size());
+    for (size_t i : take)
+    {
+        const EntityCallResult res = SendEntity(a, id, sel.draws[i], ttl);
+        ++run.calls;
+        if (res.outcome == EntityCallOutcome::Applied)
+        {
+            CommitSends(rt.sent, sel.draws, { i }, nowMs);
+            ++run.applied;
+            continue;
+        }
+        if (run.error.empty())
+        {
+            run.error = res.error;
+        }
+        if (res.outcome == EntityCallOutcome::Refused && !isLocOrGround)
+        {
+            ++run.refused;
+            continue;
+        }
+        run.stop = res.outcome;
+        break;
+    }
+    ApplyEntityRun(rt, id, run);
+}
+
+void SendLayer(app::App &a, LayerId id, const Selection &sel, uint64_t nowMs,
+               uint32_t &ioCallBudget)
+{
+    LayerSyncState &st   = a.layers;
+    LayerRuntime   &rt   = st.runtime[Idx(id)];
+    const LayerDiff diff = DiffLayer(rt.sent, sel.draws, nowMs, ResendAgeMs(st.config.refreshMs));
     if (!diff.toSend.empty())
     {
-        std::vector<uint8_t> body;
-        std::vector<uint8_t> reply;
-        if (!EncodeLayerBatch(id, sel.draws, diff.toSend, DrawTtlMs(rms), body))
+        const bool isBatched = st.agentMode != AgentEntityMode::PerEntity
+                            && SendBatch(a, id, sel, diff, nowMs);
+        if (!isBatched)
         {
-            rt.message = "batch too large to encode";
-            return;
+            SendPerEntity(a, id, sel, diff, nowMs, ioCallBudget);
         }
-        const rpc::CallStatus status = Call(a, "debug_draw_set_batch", body, reply);
-        ApplyBatchResult(rt, sel, diff,
-                         ClassifyBatchReply(status, reply,
-                                            static_cast<uint32_t>(diff.toSend.size())),
-                         nowMs);
         if (rt.isRejected)
         {
             ClearLayer(a, rt);
@@ -238,22 +359,26 @@ void Refresh(app::App &a, uint64_t nowMs)
     Selection sel[kLayerCount];
     SelectAll(a, *snap, sel);
     st.labels = ApplyLabels(st.config, sel);
+    uint32_t callBudget = kMaxEntityCallsPerRefresh;   // per-entity mode only
     for (int i = 0; i < kLayerCount; ++i)
     {
         if (st.config.layers[i].isEnabled && !st.runtime[i].isRejected)
         {
-            SendLayer(a, IdAt(i), sel[i], nowMs);
+            SendLayer(a, IdAt(i), sel[i], nowMs, callBudget);
         }
     }
 }
 
 // The agent drops everything a connection drew when it closes, and a new
 // connection owns nothing: either way the sent maps describe nothing real.
+// A re-attach to another pid can reconnect within one frame, so the pid
+// counts as a new connection too.
 void TrackConnection(app::App &a)
 {
     LayerSyncState &st          = a.layers;
     const bool      isConnected = a.rpc.IsConnected();
-    if (isConnected != st.wasConnected)
+    const uint32_t  pid         = isConnected ? static_cast<uint32_t>(a.rpc.Pid()) : 0;
+    if (isConnected != st.wasConnected || pid != st.connectedPid)
     {
         for (LayerRuntime &rt : st.runtime)
         {
@@ -263,6 +388,8 @@ void TrackConnection(app::App &a)
         }
         st.isRefreshForced = true;
         st.wasConnected    = isConnected;
+        st.connectedPid    = pid;
+        st.agentMode       = AgentEntityMode::Unknown;
     }
 }
 
@@ -359,6 +486,7 @@ void RetryLayer(LayerSyncState &st, LayerId id)
     LayerRuntime &rt = st.runtime[Idx(id)];
     rt.isRejected = false;
     rt.message.clear();
+    st.agentMode       = AgentEntityMode::Unknown;
     st.isRefreshForced = true;
 }
 
