@@ -75,13 +75,31 @@ the attached pid and the negotiated protocol version.
 
 The **Layers** panel (View > Layers, or Overlay > Layers panel) draws game state
 in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
-(locs), Ground items, and Interfaces.
+(locs), Ground items, Projectiles, Spot anims (tiles), and Interfaces.
 
 - **World layers** are entity highlights in the agent's own draw store, so the
   agent re-projects them in-process every tick and they track the camera
-  exactly. Each layer has a colour, a label mode (none / name / name + id /
-  name + id + distance), a max distance in tiles, a max count (nearest first,
-  "showing N of M" when capped) and a filter (name substring, or an exact id).
+  exactly. Each layer has a colour, label fields, a max distance in tiles, a
+  max count (nearest first, "showing N of M" when capped) and a filter (name
+  substring, or an exact id).
+- **Label fields** are ticked per layer: name, id, distance, coords, and for
+  npcs / players / self also animation id, spot anim id (the first graphic
+  playing on them), hp (npcs only: the snapshot has no player hp), combat
+  level and target (who they face / follow: a name when the index names one
+  entity, `#index` otherwise). Fields with no value this tick are left out.
+  NPCs and players can be limited to those playing an animation. The old
+  single `labels=` tokens (none / name / name_id / name_id_dist) still parse.
+- **Projectiles** draw a box on the tile they land on and a line from where
+  they were thrown, labelled `gfx <id> #<source> -> #<target>` (`tile` for a
+  fixed endpoint). **Spot anims (tiles)** draw a box on each tile a world
+  graphic plays on, labelled `spot <id>`; the snapshot carries none, so they
+  come off the event feed (`kEventSpotAnim` start events, no end event) and
+  each is shown for 2 s. Both are world-space rect / line / text commands on
+  their own fast timer (150 ms by default, TTL five fast intervals and at
+  least 750 ms), one batch per layer per refresh, and are off by default.
+- **Store budget.** Every layer together stays within 448 of the agent's 512
+  retained commands (64 left for the host and scripts); past it the farthest
+  draws are dropped first.
 - **Traffic.** While a world layer is on, the debugger refreshes on a timer
   (600 ms by default) and sends only what changed: at most one
   `debug_draw_set_batch` and one `debug_draw_clear` per layer per refresh.
@@ -94,8 +112,10 @@ in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
   connection, so labels are budgeted across all layers (40 by default, nearest
   first). Boxes need no slot. Everything on one tile (a loc at its footprint
   origin) shares one caption across layers - "Zezima | Goblin x3 | Bank booth",
-  self, player, npc, ground, loc order, cut at 48 chars with "... +N more" -
-  and spends one label of the budget.
+  self, player, npc, ground, loc order, cut at 48 chars (configurable,
+  24..120) with "... +N more" - and spends one label of the budget.
+  Projectiles and spot anims merge among themselves and get what the other
+  layers leave of the budget.
 - **Locs** draw their real footprint: the debugger reads `sizeX`/`sizeY` from
   the cache loc definition (swapped for rotation 1 and 3) and sends it as
   `w`/`h`. With the cache closed, locs draw one tile.
@@ -195,7 +215,7 @@ when no session is bound. The offline commands (`gameval`, `cache`, `cs2`,
 | `xref` | `kind` (`varbit`\|`varp`\|`const`), `id`, `dir?` | `{status: "building", files_done, files_total}` until the index is ready (the first call starts it), then `{status: "ready", total, scripts[]}`. |
 | `gameval` | `kind`, then `id`, `name` (exact) or `search` (substring); `max?` (200) | an id gives `{id, name}`; a name or search gives `{total, matches[]}`. Kinds: `item obj npc loc if interface component varp varbit varc struct enum param inv seq sprite graphic model dbrow quest`. `component` takes `id` (the hash) or `iface` + `comp`. |
 | `cache` | `type` (`npc item loc seq varbit enum struct inv param quest`), `id` | `{found, gameval, definition}`, decoded by NXTCache. The local cache opens on first use, and `NXTCache.dll` must sit beside the exe or on PATH. |
-| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `label_budget`, `iface` (layers: `npc` `player` `self` `loc` `ground`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`, `agent_mode` (`unknown` \| `batch` \| `per_entity`). A request with one bad argument applies none of them. |
+| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` (comma list or a legacy token) / `.<field>=on\|off` (`name` `id` `dist` `coords` `anim` `spot` `hp` `combat` `target`) / `.animating_only` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `fast_refresh_ms`, `label_budget`, `label_chars`, `iface` (layers: `npc` `player` `self` `loc` `ground` `proj` `spot`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`, `fast_labels_shown` / `fast_labels_wanted`, `spot_anims_held`, `rpcs_last_refresh` / `rpcs_last_fast_refresh`, `agent_mode` (`unknown` \| `batch` \| `per_entity`). A request with one bad argument applies none of them. |
 | `attach` | `pid` or `auto: true` | binds the observer session (the Attach panel's button); nothing is sent to the game |
 | `detach` | none | drops the session |
 | `quit` | none | closes this debugger instance after the reply |

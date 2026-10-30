@@ -26,7 +26,8 @@ namespace
 using nxtdbg::overlay::BatchOutcome;
 using nxtdbg::overlay::DesiredDraw;
 using nxtdbg::overlay::EntityLookup;
-using nxtdbg::overlay::LabelMode;
+using nxtdbg::overlay::LabelField;
+using nxtdbg::overlay::LabelFields;
 using nxtdbg::overlay::LayerCandidate;
 using nxtdbg::overlay::LayerId;
 using nxtdbg::overlay::NameKind;
@@ -120,6 +121,18 @@ LayerCandidate Cand(int id, int dist, const char *name)
     c.tileY      = 3200;
     c.name       = name;
     return c;
+}
+
+// The fields a `labels=` list names, through the production parser.
+LabelFields Fields(const char *list)
+{
+    LabelFields f;
+    if (!ov::ParseLabelFields(list, f))
+    {
+        std::printf("FAIL  fixture: bad label list \"%s\"\n", list);
+        ++failures;
+    }
+    return f;
 }
 
 // --- collection ------------------------------------------------------------------
@@ -241,18 +254,15 @@ void TestLabels()
 {
     LayerCandidate c = Cand(995, 3, "Coins");
     c.quantity = 250;
-    CheckStr("label name", ov::FormatLabel(LabelMode::Name, LayerId::Ground, c), "Coins x250");
+    CheckStr("label name", ov::FormatLabel(Fields("name"), LayerId::Ground, c), "Coins x250");
     CheckStr("label name+id+dist",
-             ov::FormatLabel(LabelMode::NameIdDistance, LayerId::Ground, c), "Coins x250 #995 3t");
-    CheckStr("label none", ov::FormatLabel(LabelMode::None, LayerId::Ground, c), "");
-    CheckStr("label coords only",
-             ov::FormatLabel(LabelMode::None, LayerId::Ground, c, true),
-             ("(" + std::to_string(c.tileX) + "," + std::to_string(c.tileY) + ","
-                 + std::to_string(c.plane) + ")").c_str());
-    CheckStr("label name + coords",
-             ov::FormatLabel(LabelMode::Name, LayerId::Ground, c, true),
-             ("Coins x250 (" + std::to_string(c.tileX) + "," + std::to_string(c.tileY) + ","
-                 + std::to_string(c.plane) + ")").c_str());
+             ov::FormatLabel(Fields("name,id,dist"), LayerId::Ground, c), "Coins x250 #995 3t");
+    CheckStr("label none", ov::FormatLabel(Fields(""), LayerId::Ground, c), "");
+    CheckStr("label coords only", ov::FormatLabel(Fields("coords"), LayerId::Ground, c),
+             "(3203,3200,0)");
+    CheckStr("label name + coords", ov::FormatLabel(Fields("name,coords"), LayerId::Ground, c),
+             "Coins x250 (3203,3200,0)");
+    CheckStr("label id without name", ov::FormatLabel(Fields("id"), LayerId::Ground, c), "#995");
 
     ov::LayerConfig cfg = ov::DefaultLayerConfig();
     Selection sel[ov::kLayerCount];
@@ -343,7 +353,7 @@ void TestTileLabelBudget()
 
     // A layer with labels off contributes nothing to the tile's caption.
     cfg.labelBudget = 40;
-    cfg.layers[static_cast<int>(LayerId::Ground)].labels = LabelMode::None;
+    cfg.layers[static_cast<int>(LayerId::Ground)].labels = Fields("");
     ov::ApplyLabels(cfg, sel);
     CheckStr("tile budget: labels-off layer left out", Draws(sel, LayerId::Npc)[0].label,
              "Man | Woman");
@@ -471,10 +481,27 @@ void TestSanitize()
 
 struct ItemView
 {
-    std::string kind, key, label;
+    std::string kind, key, label, space, text, font;
     int64_t     loc = -1, npc = -1, x = -1, y = -1, plane = -1, w = -1, h = -1, ttl = -1;
+    int64_t     x1 = -1, y1 = -1, x2 = -1, y2 = -1;
     bool        isSelf = false;
 };
+
+std::string *StrSlot(ItemView &v, const std::string &key)
+{
+    return key == "kind" ? &v.kind : key == "key" ? &v.key : key == "label" ? &v.label
+         : key == "space" ? &v.space : key == "text" ? &v.text : key == "font" ? &v.font
+         : nullptr;
+}
+
+int64_t *IntSlot(ItemView &v, const std::string &key)
+{
+    return key == "loc" ? &v.loc : key == "npc" ? &v.npc
+         : key == "x" ? &v.x : key == "y" ? &v.y
+         : key == "plane" ? &v.plane : key == "w" ? &v.w : key == "h" ? &v.h
+         : key == "ttl_ms" ? &v.ttl : key == "x1" ? &v.x1 : key == "y1" ? &v.y1
+         : key == "x2" ? &v.x2 : key == "y2" ? &v.y2 : nullptr;
+}
 
 void ReadItem(Reader &r, ItemView &v)
 {
@@ -491,8 +518,7 @@ void ReadItem(Reader &r, ItemView &v)
             const char *s = nullptr;
             uint32_t    sn = 0;
             r.ReadString(s, sn);
-            std::string *slot = key == "kind" ? &v.kind : key == "key" ? &v.key
-                              : key == "label" ? &v.label : nullptr;
+            std::string *slot = StrSlot(v, key);
             if (slot != nullptr)
             {
                 slot->assign(s, sn);
@@ -506,10 +532,7 @@ void ReadItem(Reader &r, ItemView &v)
         }
         int64_t x = 0;
         r.ReadInt(x);
-        int64_t *slot = key == "loc" ? &v.loc : key == "npc" ? &v.npc
-                      : key == "x" ? &v.x : key == "y" ? &v.y
-                      : key == "plane" ? &v.plane : key == "w" ? &v.w : key == "h" ? &v.h
-                      : key == "ttl_ms" ? &v.ttl : nullptr;
+        int64_t *slot = IntSlot(v, key);
         if (slot != nullptr)
         {
             *slot = x;
@@ -760,6 +783,397 @@ void TestEncodeHighlightEntity()
 
 }
 
+// --- label fields -----------------------------------------------------------------
+
+void TestLegacyLabelTokens()
+{
+    LabelFields f;
+    f.showCoords = true;   // an old ini's separate `coords=1` line
+    CheckEq("legacy name_id parses", ov::ParseLabelFields("name_id", f), 1);
+    CheckEq("legacy name_id: name", f.showName, 1);
+    CheckEq("legacy name_id: id", f.showId, 1);
+    CheckEq("legacy name_id: no distance", f.showDistance, 0);
+    CheckEq("legacy token keeps coords", f.showCoords, 1);
+    ov::ParseLabelFields("name_id_dist", f);
+    CheckEq("legacy name_id_dist: distance", f.showDistance, 1);
+    ov::ParseLabelFields("none", f);
+    CheckEq("legacy none: name off", f.showName, 0);
+    CheckEq("legacy none: id off", f.showId, 0);
+    CheckEq("legacy none: coords kept", f.showCoords, 1);
+    ov::ParseLabelFields("name", f);
+    CheckStr("legacy name -> list", ov::LabelFieldsToken(f), "name,coords");
+
+    CheckStr("list round trip", ov::LabelFieldsToken(Fields("target,name,anim,coords")),
+             "name,coords,anim,target");
+    CheckEq("list: distance alias", Fields("distance").showDistance, 1);
+    CheckStr("empty list: all off", ov::LabelFieldsToken(Fields("")), "");
+    LabelFields keep = Fields("name,hp");
+    CheckEq("bad list refused", ov::ParseLabelFields("name,bogus", keep), 0);
+    CheckStr("bad list changes nothing", ov::LabelFieldsToken(keep), "name,hp");
+    LabelField field = LabelField::Name;
+    CheckEq("field token spot", ov::ParseLabelField("spot", field), 1);
+    CheckEq("field token spot -> SpotAnim", static_cast<long long>(field),
+            static_cast<long long>(LabelField::SpotAnim));
+}
+
+void AddPlayer(nxt::ipc::Snapshot &s, int idx, int x, const char *name)
+{
+    nxt::ipc::PlayerEntry &p = s.players[s.playerCount++];
+    p.serverIndex    = idx;
+    p.tileX          = static_cast<int16_t>(x);
+    p.tileY          = 3200;
+    p.animationId    = -1;
+    p.spotAnimId     = -1;
+    p.followingIndex = -1;
+    std::snprintf(p.name, sizeof(p.name), "%s", name);
+}
+
+void TestActorLabelFields()
+{
+    auto s = InWorldSnapshot();
+    AddPlayer(*s, 9, 3205, "Zezima");
+    AddNpc(*s, 11, 3000, 3203, 3200, 0);
+    nxt::ipc::NpcEntry &n = s->npcs[0];
+    n.animationId    = 808;
+    n.spotAnimId     = 90;
+    n.hp             = 50;
+    n.maxHp          = 100;
+    n.combatLevel    = 12;
+    n.followingIndex = 9;
+    std::vector<LayerCandidate> out;
+    ov::CollectCandidates(LayerId::Npc, *s, 20, kLookup, out);
+    const LabelFields all = Fields("name,anim,spot,hp,combat,target");
+    CheckStr("npc: every actor field", ov::FormatLabel(all, LayerId::Npc, out[0]),
+             "Banker anim 808 spot 90 hp 50/100 lvl 12 -> Zezima");
+    out[0].animationId = -1;
+    out[0].spotAnimId  = -1;
+    CheckStr("npc: idle fields left out", ov::FormatLabel(all, LayerId::Npc, out[0]),
+             "Banker hp 50/100 lvl 12 -> Zezima");
+
+    // Player 11 as well as npc 11: an index with no type names no one.
+    AddPlayer(*s, 12, 3206, "Lynx");
+    s->players[1].followingIndex = 11;
+    AddPlayer(*s, 11, 3207, "Twin");
+    ov::CollectCandidates(LayerId::Player, *s, 20, kLookup, out);
+    CheckStr("player: ambiguous target is an index",
+             ov::FormatLabel(Fields("target"), LayerId::Player, out[1]), "-> #11");
+    CheckStr("player: no hp in the snapshot",
+             ov::FormatLabel(Fields("name,hp"), LayerId::Player, out[1]), "Lynx");
+
+    // Self's target carries a type, so the same index resolves.
+    s->self.targetIndex = 11;
+    s->self.targetType  = 1;
+    s->self.animationId = -1;
+    ov::CollectCandidates(LayerId::Self, *s, 20, kLookup, out);
+    CheckStr("self: typed target names the npc",
+             ov::FormatLabel(Fields("target"), LayerId::Self, out[0]), "-> Banker");
+
+    LayerCandidate loc = Cand(501, 2, "Bank booth");
+    loc.animationId = 5;
+    CheckStr("loc: actor fields ignored", ov::FormatLabel(Fields("name,anim"), LayerId::Loc, loc),
+             "Bank booth");
+    ov::LayerSettings ls = ov::DefaultLayerSettings(LayerId::Loc);
+    ls.labels = Fields("anim");
+    CheckEq("wants label: anim only on a loc", ov::WantsLabel(LayerId::Loc, ls), 0);
+    CheckEq("wants label: anim only on an npc", ov::WantsLabel(LayerId::Npc, ls), 1);
+}
+
+void TestAnimatingOnly()
+{
+    ov::LayerSettings s = ov::DefaultLayerSettings(LayerId::Npc);
+    s.isAnimatingOnly = true;
+    std::vector<LayerCandidate> c = { Cand(1, 1, "Idle"), Cand(2, 2, "Busy") };
+    c[1].animationId = 808;
+    const Selection sel = ov::SelectLayer(LayerId::Npc, s, c);
+    CheckEq("animating only: idle dropped", static_cast<long long>(sel.draws.size()), 1);
+    CheckEq("animating only: animating kept", sel.draws[0].candidate.selectorId, 2);
+    CheckEq("animating only: matched counts after the filter", sel.matched, 1);
+    std::vector<LayerCandidate> locs = { Cand(1, 1, "Tree") };
+    CheckEq("animating only: not a loc filter",
+            static_cast<long long>(ov::SelectLayer(LayerId::Loc, s, locs).draws.size()), 1);
+}
+
+// Merged tile captions are cut to cfg.tileLabelChars.
+void TestTileLabelChars()
+{
+    CheckStr("merge: 24-char cap",
+             ov::MergeTileLabels({ "Guard", "Banker", "Man", "Woman", "Goblin" }, 24),
+             "Guard... +4 more");
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    cfg.tileLabelChars = 120;
+    Selection sel[ov::kLayerCount];
+    for (int i = 0; i < 8; ++i)
+    {
+        Draws(sel, LayerId::Npc).push_back(OnTile(("n" + std::to_string(i)).c_str(), i, 1,
+                                                  3201, 3200, ("Npc" + std::to_string(i)).c_str()));
+    }
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("label chars 120: all eight fit", Draws(sel, LayerId::Npc)[0].label,
+             "Npc0 | Npc1 | Npc2 | Npc3 | Npc4 | Npc5 | Npc6 | Npc7");
+    cfg.tileLabelChars = 24;
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("label chars 24: cut", Draws(sel, LayerId::Npc)[0].label,
+             "Npc0 | Npc1... +6 more");
+}
+
+// --- projectiles / spot anims -----------------------------------------------------
+
+void AddProjectile(nxt::ipc::Snapshot &s, int gfx, int cycle, int src, int tgt, int toX, int toY)
+{
+    nxt::ipc::ProjectileEntry &p = s.projectiles[s.projectileCount++];
+    p.projectileId = gfx;
+    p.startCycle   = cycle;
+    p.sourceIndex  = static_cast<int16_t>(src);
+    p.targetIndex  = static_cast<int16_t>(tgt);
+    p.startTileX   = 3200;
+    p.startTileY   = 3200;
+    p.endTileX     = static_cast<int16_t>(toX);
+    p.endTileY     = static_cast<int16_t>(toY);
+}
+
+void TestCollectProjectiles()
+{
+    auto s = InWorldSnapshot();
+    AddProjectile(*s, 1234, 5000, 7, 11, 3205, 3203);
+    AddProjectile(*s, 1235, 5001, 7, -1, 3260, 3200);   // 60 tiles: past the cut-off
+    std::vector<LayerCandidate> out;
+    ov::CollectCandidates(LayerId::Projectile, *s, 30, kLookup, out);
+    CheckEq("proj: distance gate", static_cast<long long>(out.size()), 1);
+    CheckEq("proj: placed at the target tile x", out[0].tileX, 3205);
+    CheckEq("proj: placed at the target tile y", out[0].tileY, 3203);
+    CheckEq("proj: distance to the target tile", out[0].distance, 5);
+    CheckEq("proj: launch tile kept", out[0].fromX, 3200);
+    CheckStr("proj: key", ov::LayerKey(LayerId::Projectile, out[0]), "dbg:proj:1234:5000:7:11");
+    CheckStr("proj: prefix", ov::LayerKeyPrefix(LayerId::Projectile), "dbg:proj:");
+    CheckStr("proj: default label (name + target)",
+             ov::FormatLabel(ov::DefaultLayerSettings(LayerId::Projectile).labels,
+                             LayerId::Projectile, out[0]),
+             "gfx 1234 #7 -> #11");
+    out[0].targetIndex = -1;
+    CheckStr("proj: tile target", ov::FormatLabel(Fields("target"), LayerId::Projectile, out[0]),
+             "#7 -> tile");
+
+    LayerCandidate worst = Cand(2147483647, 0, "x");   // a graphic id is never negative
+    worst.serial      = -2147483647 - 1;
+    worst.sourceIndex = -32768;
+    worst.targetIndex = -32768;
+    CheckEq("longest projectile caption key fits 47 bytes",
+            (ov::LayerKey(LayerId::Projectile, worst) + ":t").size() <= ov::kMaxDrawKeyBytes, 1);
+}
+
+Selection OneProjectile(int toX)
+{
+    LayerCandidate c = Cand(1234, 5, "gfx 1234");
+    c.serial      = 5000;
+    c.sourceIndex = 7;
+    c.targetIndex = 11;
+    c.fromX       = 3200;
+    c.fromY       = 3200;
+    c.tileX       = toX;
+    std::vector<LayerCandidate> cands = { c };
+    return ov::SelectLayer(LayerId::Projectile,
+                           ov::DefaultLayerSettings(LayerId::Projectile), cands);
+}
+
+void TestProjectileExpandAndDiff()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    Selection sel[ov::kLayerCount];
+    sel[static_cast<int>(LayerId::Projectile)] = OneProjectile(3205);
+    ov::ApplyFastLabels(cfg, sel, 10);
+    std::vector<DesiredDraw> want = ov::ExpandDraws(LayerId::Projectile,
+                                                    Draws(sel, LayerId::Projectile));
+    CheckEq("expand: box + line + caption", static_cast<long long>(want.size()), 3);
+    CheckStr("expand: box key", want[0].key, "dbg:proj:1234:5000:7:11");
+    CheckStr("expand: line key", want[1].key, "dbg:proj:1234:5000:7:11:l");
+    CheckStr("expand: caption key", want[2].key, "dbg:proj:1234:5000:7:11:t");
+    CheckStr("expand: box carries no label", want[0].label, "");
+    CheckStr("expand: caption text", want[2].label, "gfx 1234 #7 -> #11");
+
+    SentMap sent;
+    ov::LayerDiff d = ov::DiffLayer(sent, want, 1000, ov::FastResendAgeMs(150));
+    CheckEq("proj diff: first refresh sends all three", static_cast<long long>(d.toSend.size()), 3);
+    ov::CommitSends(sent, want, d.toSend, 1000);
+    d = ov::DiffLayer(sent, want, 1150, ov::FastResendAgeMs(150));
+    CheckEq("proj diff: unchanged sends nothing", static_cast<long long>(d.toSend.size()), 0);
+
+    // The target walks a tile: same keys, new geometry -> all three re-sent.
+    sel[static_cast<int>(LayerId::Projectile)] = OneProjectile(3206);
+    ov::ApplyFastLabels(cfg, sel, 10);
+    want = ov::ExpandDraws(LayerId::Projectile, Draws(sel, LayerId::Projectile));
+    d = ov::DiffLayer(sent, want, 1300, ov::FastResendAgeMs(150));
+    CheckEq("proj diff: moved target re-sent", static_cast<long long>(d.toSend.size()), 3);
+    CheckEq("proj diff: moved target not cleared", static_cast<long long>(d.toClear.size()), 0);
+
+    // It lands: every one of its commands is cleared.
+    d = ov::DiffLayer(sent, {}, 1450, ov::FastResendAgeMs(150));
+    CheckEq("proj diff: landed clears all three", static_cast<long long>(d.toClear.size()), 3);
+    CheckStr("proj diff: clears the line", d.toClear[1], "dbg:proj:1234:5000:7:11:l");
+
+    // No label budget left: box and line only. Launched on its own tile: no line.
+    ov::ApplyFastLabels(cfg, sel, 0);
+    CheckEq("expand: no caption without budget", static_cast<long long>(
+                ov::ExpandDraws(LayerId::Projectile, Draws(sel, LayerId::Projectile)).size()), 2);
+    sel[static_cast<int>(LayerId::Projectile)] = OneProjectile(3200);
+    Draws(sel, LayerId::Projectile)[0].candidate.tileY = 3200;
+    CheckEq("expand: no line when it does not travel", static_cast<long long>(
+                ov::ExpandDraws(LayerId::Projectile, Draws(sel, LayerId::Projectile)).size()), 1);
+
+    // An entity's position is not in its signature: the agent follows it.
+    std::vector<DesiredDraw> npc = Wanted({ "dbg:npc:1" });
+    SentMap npcSent;
+    ov::CommitSends(npcSent, npc, { 0 }, 1000);
+    npc[0].candidate.tileX += 3;
+    CheckEq("entity move is no resend",
+            static_cast<long long>(ov::DiffLayer(npcSent, npc, 1100, 1800).toSend.size()), 0);
+}
+
+void TestFastLabelsApart()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    Selection sel[ov::kLayerCount];
+    Draws(sel, LayerId::Npc).push_back(OnTile("dbg:npc:1", 1, 5, 3205, 3200, "Man"));
+    sel[static_cast<int>(LayerId::Projectile)] = OneProjectile(3205);
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("fast apart: npc caption alone", Draws(sel, LayerId::Npc)[0].label, "Man");
+    CheckStr("fast apart: entity pass leaves projectiles",
+             Draws(sel, LayerId::Projectile)[0].label, "");
+    const ov::LabelTally t = ov::ApplyFastLabels(cfg, sel, 0);
+    CheckEq("fast labels: wanted", t.wanted, 1);
+    CheckEq("fast labels: none given at budget 0", t.given, 0);
+    ov::ApplyFastLabels(cfg, sel, 1);
+    CheckStr("fast labels: projectile captioned", Draws(sel, LayerId::Projectile)[0].label,
+             "gfx 1234 #7 -> #11");
+    CheckStr("fast labels: npc untouched", Draws(sel, LayerId::Npc)[0].label, "Man");
+}
+
+void TestStoreBudget()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    cfg.layers[static_cast<int>(LayerId::Npc)].isEnabled = true;
+    cfg.layers[static_cast<int>(LayerId::Loc)].isEnabled = true;
+    Selection sel[ov::kLayerCount];
+    for (int dist : { 1, 2, 9 })
+    {
+        Draws(sel, LayerId::Npc).push_back(OnTile("n", dist, dist, 3200 + dist, 3200, "Man"));
+    }
+    for (int dist : { 3, 8 })
+    {
+        Draws(sel, LayerId::Loc).push_back(OnTile("l", dist, dist, 3200 + dist, 3200, "Tree"));
+    }
+    Draws(sel, LayerId::Ground).push_back(OnTile("g", 1, 20, 3220, 3200, "Coins"));   // off
+    CheckEq("store: farthest two dropped", ov::FitStoreBudget(cfg, false, sel, 3), 2);
+    CheckEq("store: npc keeps two", static_cast<long long>(Draws(sel, LayerId::Npc).size()), 2);
+    CheckEq("store: loc keeps one", static_cast<long long>(Draws(sel, LayerId::Loc).size()), 1);
+    CheckEq("store: disabled layer untouched",
+            static_cast<long long>(Draws(sel, LayerId::Ground).size()), 1);
+
+    // A labelled, travelling projectile costs three commands.
+    cfg.layers[static_cast<int>(LayerId::Projectile)].isEnabled = true;
+    for (int i = 0; i < 3; ++i)
+    {
+        Draws(sel, LayerId::Projectile).push_back(OneProjectile(3201 + i).draws[0]);
+        Draws(sel, LayerId::Projectile).back().candidate.distance = i + 1;
+    }
+    CheckEq("store: projectile command cost", ov::WireCommandCount(LayerId::Projectile,
+            cfg.layers[static_cast<int>(LayerId::Projectile)], Draws(sel, LayerId::Projectile)[0]), 3);
+    CheckEq("store: fast group trimmed apart", ov::FitStoreBudget(cfg, true, sel, 7), 1);
+    CheckEq("store: two projectiles fit 7",
+            static_cast<long long>(Draws(sel, LayerId::Projectile).size()), 2);
+    CheckEq("store: entity layers untouched by the fast fit",
+            static_cast<long long>(Draws(sel, LayerId::Npc).size()), 2);
+}
+
+void TestSpotAnims()
+{
+    std::vector<ov::SpotAnimSighting> seen;
+    ov::RecordSpotAnim(seen, { 90, 3201, 3200, 0, 1000 });
+    ov::RecordSpotAnim(seen, { 90, 3201, 3200, 0, 1500 });
+    ov::RecordSpotAnim(seen, { 90, 3260, 3200, 0, 1500 });   // 60 tiles away
+    CheckEq("spot: one per id and tile", static_cast<long long>(seen.size()), 2);
+    CheckEq("spot: repeat refreshes its time", static_cast<long long>(seen[0].seenAtMs), 1500);
+    auto s = InWorldSnapshot();
+    std::vector<LayerCandidate> out;
+    ov::CollectSpotAnims(seen, *s, 20, out);
+    CheckEq("spot: distance gate", static_cast<long long>(out.size()), 1);
+    CheckStr("spot: name", out[0].name, "spot 90");
+    CheckStr("spot: key", ov::LayerKey(LayerId::SpotAnim, out[0]), "dbg:spot:90:3201:3200:0");
+    ov::ExpireSpotAnims(seen, 3499, ov::kSpotAnimHoldMs);
+    CheckEq("spot: held for the hold time", static_cast<long long>(seen.size()), 2);
+    ov::ExpireSpotAnims(seen, 3500, ov::kSpotAnimHoldMs);
+    CheckEq("spot: expired after it", static_cast<long long>(seen.size()), 0);
+}
+
+void TestFastConfig()
+{
+    CheckEq("fast ttl at 150 ms", ov::FastDrawTtlMs(150), 750);
+    CheckEq("fast resend age at 150 ms", static_cast<long long>(ov::FastResendAgeMs(150)), 450);
+    CheckEq("fast ttl at 1000 ms", ov::FastDrawTtlMs(1000), 5000);
+    ov::LayerConfig c = ov::DefaultLayerConfig();
+    CheckEq("defaults: projectiles off", c.layers[static_cast<int>(LayerId::Projectile)].isEnabled, 0);
+    CheckEq("defaults: spot anims off", c.layers[static_cast<int>(LayerId::SpotAnim)].isEnabled, 0);
+    CheckEq("defaults: projectile cap", c.layers[static_cast<int>(LayerId::Projectile)].maxCount, 50);
+    CheckEq("defaults: spot anim cap", c.layers[static_cast<int>(LayerId::SpotAnim)].maxCount, 50);
+    CheckEq("defaults: fast refresh", c.fastRefreshMs, 150);
+    c.fastRefreshMs  = 1;
+    c.tileLabelChars = 500;
+    c.layers[static_cast<int>(LayerId::Projectile)].maxCount = 200;
+    ov::SanitizeConfig(c);
+    CheckEq("sanitize fast refresh floor", c.fastRefreshMs, ov::kMinFastRefreshMs);
+    CheckEq("sanitize label chars ceiling", c.tileLabelChars, ov::kMaxTileLabelChars);
+    CheckEq("sanitize fast layer count", c.layers[static_cast<int>(LayerId::Projectile)].maxCount,
+            ov::kMaxFastLayerCount);
+    c.tileLabelChars = 3;
+    ov::SanitizeConfig(c);
+    CheckEq("sanitize label chars floor", c.tileLabelChars, ov::kMinTileLabelChars);
+    LayerId id = LayerId::Npc;
+    CheckEq("layer alias projectile", ov::ParseLayerToken("projectile", id), 1);
+    CheckEq("layer alias -> Projectile", static_cast<long long>(id),
+            static_cast<long long>(LayerId::Projectile));
+}
+
+void TestEncodeWorldBatch()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    Selection sel[ov::kLayerCount];
+    sel[static_cast<int>(LayerId::Projectile)] = OneProjectile(3205);
+    Draws(sel, LayerId::Projectile)[0].candidate.tileY = 3203;
+    ov::ApplyFastLabels(cfg, sel, 10);
+    const std::vector<DesiredDraw> want =
+        ov::ExpandDraws(LayerId::Projectile, Draws(sel, LayerId::Projectile));
+    std::vector<uint8_t> body;
+    CheckEq("encode world batch",
+            ov::EncodeLayerBatch(LayerId::Projectile, want, { 0, 1, 2 }, 750, body), 1);
+    Reader   r(body.data(), body.size());
+    uint32_t n = 0;
+    r.ReadMapHeader(n);
+    const char *k = nullptr;
+    uint32_t    kn = 0;
+    r.ReadString(k, kn);
+    r.ReadArrayHeader(n);
+    CheckEq("world batch: three items", n, 3);
+    ItemView box, line, text;
+    ReadItem(r, box);
+    ReadItem(r, line);
+    ReadItem(r, text);
+    CheckStr("box kind", box.kind, "rect");
+    CheckStr("box space", box.space, "world");
+    CheckEq("box x: tile corner in sub-tiles", box.x, 3205LL * 256);
+    CheckEq("box y: tile corner in sub-tiles", box.y, 3203LL * 256);
+    CheckEq("box w: one tile", box.w, 256);
+    CheckEq("box plane", box.plane, 0);
+    CheckEq("box ttl", box.ttl, 750);
+    CheckStr("box: no font (the agent refuses one on a rect)", box.font, "");
+    CheckStr("line kind", line.kind, "line");
+    CheckEq("line x1: launch tile centre", line.x1, 3200LL * 256 + 128);
+    CheckEq("line y2: target tile centre", line.y2, 3203LL * 256 + 128);
+    CheckStr("text kind", text.kind, "text");
+    CheckStr("text key", text.key, "dbg:proj:1234:5000:7:11:t");
+    CheckStr("text payload", text.text, "gfx 1234 #7 -> #11");
+    CheckEq("text anchor: tile centre", text.x, 3205LL * 256 + 128);
+    CheckStr("text: no label key", text.label, "");
+}
+
 int main()
 {
     TestCollectNpcs();
@@ -784,6 +1198,17 @@ int main()
     TestCallBudgetSpreads();
     TestEntityReplies();
     TestEncodeHighlightEntity();
+    TestLegacyLabelTokens();
+    TestActorLabelFields();
+    TestAnimatingOnly();
+    TestTileLabelChars();
+    TestCollectProjectiles();
+    TestProjectileExpandAndDiff();
+    TestFastLabelsApart();
+    TestStoreBudget();
+    TestSpotAnims();
+    TestFastConfig();
+    TestEncodeWorldBatch();
     std::printf("%d failure(s)\n", failures);
     return failures;
 }

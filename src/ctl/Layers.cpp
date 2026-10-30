@@ -15,8 +15,14 @@
 //   nxtdbgctl layers                              -> every layer's settings + state
 //   nxtdbgctl layers set npc=on loc=off           -> toggle
 //   nxtdbgctl layers set npc.filter=Banker npc.labels=name_id loc.max_distance=10
-//   nxtdbgctl layers set refresh_ms=1200 label_budget=20 iface=on
+//   nxtdbgctl layers set npc.anim=on npc.hp=on npc.animating_only=on npc.labels=name,id
+//   nxtdbgctl layers set proj=on proj.target=on spot=on fast_refresh_ms=150
+//   nxtdbgctl layers set refresh_ms=1200 label_budget=20 label_chars=80 iface=on
 //   nxtdbgctl layers retry                        -> re-arm layers the agent refused
+//
+// `labels=` takes a comma list of label fields (name, id, dist, coords, anim,
+// spot, hp, combat, target) or one of the old single tokens (none, name,
+// name_id, name_id_dist), which set name / id / dist only.
 //
 // nxtdbgctl turns the bare word after the command into `action`. Any
 // key=value is applied whether or not `action` says "set".
@@ -74,31 +80,51 @@ bool ParseColor(const JsonValue &v, uint32_t &out)
     return true;
 }
 
-bool SetLayerField(LayerSettings &s, const std::string &field, const JsonValue &v,
-                   std::string &outError)
+// `labels=<list or legacy token>`, `animating_only=on` or one label field
+// (`anim=on`, `coords=off`, ...). False when `field` is none of them.
+bool SetLabelSetting(LayerSettings &s, const std::string &field, const JsonValue &v, bool &outIsOk)
 {
-    bool isOk = true;
+    overlay::LabelField label = overlay::LabelField::Name;
+    if (field == "labels")
+    {
+        outIsOk = overlay::ParseLabelFields(v.AsString(), s.labels);
+        return true;
+    }
+    if (field == "animating_only")
+    {
+        outIsOk = ParseSwitch(v, s.isAnimatingOnly);
+        return true;
+    }
+    if (!overlay::ParseLabelField(field, label))
+    {
+        return false;
+    }
+    bool isOn = false;
+    outIsOk = ParseSwitch(v, isOn);
+    if (outIsOk)
+    {
+        overlay::SetLabelField(s.labels, label, isOn);
+    }
+    return true;
+}
+
+// enabled / color / max_distance / max_count / filter. False when `field` is
+// none of them.
+bool SetPlainField(LayerSettings &s, const std::string &field, const JsonValue &v, bool &outIsOk)
+{
     if (field.empty() || field == "enabled")
     {
-        isOk = ParseSwitch(v, s.isEnabled);
+        outIsOk = ParseSwitch(v, s.isEnabled);
     }
     else if (field == "color")
     {
-        isOk = ParseColor(v, s.colorArgb);
-    }
-    else if (field == "labels")
-    {
-        isOk = overlay::ParseLabelMode(v.AsString(), s.labels);
-    }
-    else if (field == "coords")
-    {
-        isOk = ParseSwitch(v, s.showCoords);
+        outIsOk = ParseColor(v, s.colorArgb);
     }
     else if (field == "max_distance" || field == "max_count")
     {
         int &target = field == "max_count" ? s.maxCount : s.maxDistance;
-        isOk   = v.IsNumber();
-        target = static_cast<int>(v.AsInt(target));
+        outIsOk = v.IsNumber();
+        target  = static_cast<int>(v.AsInt(target));
     }
     else if (field == "filter")
     {
@@ -106,8 +132,20 @@ bool SetLayerField(LayerSettings &s, const std::string &field, const JsonValue &
     }
     else
     {
+        return false;
+    }
+    return true;
+}
+
+bool SetLayerField(LayerSettings &s, const std::string &field, const JsonValue &v,
+                   std::string &outError)
+{
+    bool isOk = true;
+    if (!SetLabelSetting(s, field, v, isOk) && !SetPlainField(s, field, v, isOk))
+    {
         outError = "unknown layer field '" + field
-                 + "' (enabled, color, labels, max_distance, max_count, filter)";
+                 + "' (enabled, color, labels, name, id, dist, coords, anim, spot, hp, combat,"
+                   " target, animating_only, max_distance, max_count, filter)";
         return false;
     }
     if (!isOk)
@@ -126,14 +164,32 @@ struct LayerEdit
     bool                 isIfaceAllLabels = false;
 };
 
-// refresh_ms / label_budget / iface / iface_all_labels. False when `key` is
-// not a global.
+// The numeric global `key` names, or nullptr.
+int *GlobalNumber(overlay::LayerConfig &c, const std::string &key)
+{
+    if (key == "refresh_ms" || key == "interval_ms")
+    {
+        return &c.refreshMs;
+    }
+    if (key == "fast_refresh_ms")
+    {
+        return &c.fastRefreshMs;
+    }
+    if (key == "label_budget")
+    {
+        return &c.labelBudget;
+    }
+    return key == "label_chars" ? &c.tileLabelChars : nullptr;
+}
+
+// refresh_ms / fast_refresh_ms / label_budget / label_chars / iface /
+// iface_all_labels. False when `key` is not a global.
 bool SetGlobal(LayerEdit &e, const std::string &key, const JsonValue &v, std::string &outError)
 {
-    const bool isRefresh = key == "refresh_ms" || key == "interval_ms";
-    if (isRefresh || key == "label_budget")
+    int *number = GlobalNumber(e.config, key);
+    if (number != nullptr)
     {
-        int &field = isRefresh ? e.config.refreshMs : e.config.labelBudget;
+        int &field = *number;
         if (!v.IsNumber())
         {
             outError = key + " takes a number";
@@ -168,7 +224,7 @@ bool ApplyArg(LayerEdit &e, const std::string &key, const JsonValue &v, std::str
     LayerId id = LayerId::Npc;
     if (!overlay::ParseLayerToken(token, id))
     {
-        outError = "unknown layer '" + token + "' (npc, player, self, loc, ground, iface)";
+        outError = "unknown layer '" + token + "' (npc, player, self, loc, ground, proj, spot, iface)";
         return false;
     }
     return SetLayerField(e.config.layers[static_cast<int>(id)], field, v, outError);
@@ -184,8 +240,8 @@ JsonValue LayerJson(const app::App &a, int i)
     Put(o, "layer", JStr(overlay::LayerToken(static_cast<LayerId>(i))));
     Put(o, "enabled", JBool(s.isEnabled));
     Put(o, "color", JStr(color));
-    Put(o, "labels", JStr(overlay::LabelModeToken(s.labels)));
-    Put(o, "coords", JBool(s.showCoords));
+    Put(o, "labels", JStr(overlay::LabelFieldsToken(s.labels)));
+    Put(o, "animating_only", JBool(s.isAnimatingOnly));
     Put(o, "max_distance", JInt(s.maxDistance));
     Put(o, "max_count", JInt(s.maxCount));
     Put(o, "filter", JStr(s.filter));
@@ -201,6 +257,9 @@ void Describe(const app::App &a, JsonValue &out)
 {
     Put(out, "refresh_ms", JInt(a.layers.config.refreshMs));
     Put(out, "ttl_ms", JInt(overlay::DrawTtlMs(a.layers.config.refreshMs)));
+    Put(out, "fast_refresh_ms", JInt(a.layers.config.fastRefreshMs));
+    Put(out, "fast_ttl_ms", JInt(overlay::FastDrawTtlMs(a.layers.config.fastRefreshMs)));
+    Put(out, "label_chars", JInt(a.layers.config.tileLabelChars));
     JsonValue iface = JObj();
     Put(iface, "enabled", JBool(a.overlayEnabled));
     Put(iface, "all_labels", JBool(a.overlayShowAllLabels));
@@ -214,7 +273,11 @@ void Describe(const app::App &a, JsonValue &out)
     Put(out, "label_budget", JInt(a.layers.config.labelBudget));
     Put(out, "labels_shown", JInt(a.layers.labels.given));
     Put(out, "labels_wanted", JInt(a.layers.labels.wanted));
+    Put(out, "fast_labels_shown", JInt(a.layers.fastLabels.given));
+    Put(out, "fast_labels_wanted", JInt(a.layers.fastLabels.wanted));
+    Put(out, "spot_anims_held", JInt(static_cast<int64_t>(a.layers.spotAnims.size())));
     Put(out, "rpcs_last_refresh", JInt(a.layers.rpcsLastRefresh));
+    Put(out, "rpcs_last_fast_refresh", JInt(a.layers.rpcsLastFastRefresh));
     Put(out, "agent_mode", JStr(overlay::AgentModeToken(a.layers.agentMode)));
     Put(out, "rpc_connected", JBool(a.rpc.IsConnected()));
 }

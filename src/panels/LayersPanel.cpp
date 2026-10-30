@@ -44,6 +44,7 @@ constexpr const char *kIniEntry = "Layers";
 // Paint order of the cards: what a debugging user reaches for first.
 constexpr LayerId kCardOrder[overlay::kLayerCount] = {
     LayerId::Npc, LayerId::Player, LayerId::Self, LayerId::Loc, LayerId::Ground,
+    LayerId::Projectile, LayerId::SpotAnim,
 };
 
 void Changed(app::App &a)
@@ -74,8 +75,12 @@ bool ReadLayerLine(LayerSettings &s, const char *field, const char *value)
 {
     if (std::strcmp(field, "enabled") == 0)      { s.isEnabled = std::atoi(value) != 0; }
     else if (std::strcmp(field, "color") == 0)   { s.colorArgb = std::strtoul(value, nullptr, 16); }
-    else if (std::strcmp(field, "labels") == 0)  { overlay::ParseLabelMode(value, s.labels); }
-    else if (std::strcmp(field, "coords") == 0)  { s.showCoords = std::atoi(value) != 0; }
+    else if (std::strcmp(field, "labels") == 0)  { overlay::ParseLabelFields(value, s.labels); }
+    else if (std::strcmp(field, "coords") == 0)   // pre-fields ini: its own line
+    {
+        overlay::SetLabelField(s.labels, overlay::LabelField::Coords, std::atoi(value) != 0);
+    }
+    else if (std::strcmp(field, "animating_only") == 0) { s.isAnimatingOnly = std::atoi(value) != 0; }
     else if (std::strcmp(field, "distance") == 0) { s.maxDistance = std::atoi(value); }
     else if (std::strcmp(field, "count") == 0)   { s.maxCount = std::atoi(value); }
     else if (std::strcmp(field, "filter") == 0)
@@ -101,7 +106,9 @@ void IniReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *entry, const char
     const std::string key(line, static_cast<size_t>(eq - line));
     const char       *value = eq + 1;
     if (key == "refresh_ms")             { a.layers.config.refreshMs = std::atoi(value); return; }
+    if (key == "fast_refresh_ms")        { a.layers.config.fastRefreshMs = std::atoi(value); return; }
     if (key == "label_budget")           { a.layers.config.labelBudget = std::atoi(value); return; }
+    if (key == "label_chars")            { a.layers.config.tileLabelChars = std::atoi(value); return; }
     if (key == "interfaces")             { a.overlayEnabled = std::atoi(value) != 0; return; }
     if (key == "interfaces_all_labels")  { a.overlayShowAllLabels = std::atoi(value) != 0; return; }
     const size_t dot = key.find('.');
@@ -122,7 +129,9 @@ void IniWriteAll(ImGuiContext *, ImGuiSettingsHandler *h, ImGuiTextBuffer *out)
     const app::App &a = *static_cast<const app::App *>(h->UserData);
     out->appendf("[%s][%s]\n", kIniType, kIniEntry);
     out->appendf("refresh_ms=%d\n", a.layers.config.refreshMs);
+    out->appendf("fast_refresh_ms=%d\n", a.layers.config.fastRefreshMs);
     out->appendf("label_budget=%d\n", a.layers.config.labelBudget);
+    out->appendf("label_chars=%d\n", a.layers.config.tileLabelChars);
     out->appendf("interfaces=%d\n", a.overlayEnabled ? 1 : 0);
     out->appendf("interfaces_all_labels=%d\n", a.overlayShowAllLabels ? 1 : 0);
     for (int i = 0; i < overlay::kLayerCount; ++i)
@@ -131,8 +140,8 @@ void IniWriteAll(ImGuiContext *, ImGuiSettingsHandler *h, ImGuiTextBuffer *out)
         const char          *tok = overlay::LayerToken(static_cast<LayerId>(i));
         out->appendf("%s.enabled=%d\n", tok, s.isEnabled ? 1 : 0);
         out->appendf("%s.color=%08X\n", tok, s.colorArgb);
-        out->appendf("%s.labels=%s\n", tok, overlay::LabelModeToken(s.labels));
-        out->appendf("%s.coords=%d\n", tok, s.showCoords ? 1 : 0);
+        out->appendf("%s.labels=%s\n", tok, overlay::LabelFieldsToken(s.labels).c_str());
+        out->appendf("%s.animating_only=%d\n", tok, s.isAnimatingOnly ? 1 : 0);
         out->appendf("%s.distance=%d\n", tok, s.maxDistance);
         out->appendf("%s.count=%d\n", tok, s.maxCount);
         out->appendf("%s.filter=%s\n", tok, s.filter);
@@ -221,32 +230,62 @@ void DrawLayerMessage(app::App &a, LayerId id, const LayerRuntime &rt)
     }
 }
 
-void DrawLabelCombo(app::App &a, LayerSettings &s)
+// One checkbox per label field that means something on this layer, flowing
+// onto a new line when the next one would not fit.
+void DrawLabelFields(app::App &a, LayerId id, LayerSettings &s)
 {
-    const float w = ImGui::GetFontSize() * 11.0f;
-    ImGui::SetNextItemWidth(w);
-    if (!ImGui::BeginCombo("labels", overlay::LabelModeTitle(s.labels)))
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::kTextDim);
+    ImGui::TextUnformatted("label");
+    ImGui::PopStyleColor();
+    const ImGuiStyle &style = ImGui::GetStyle();
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    bool isFirst = true;
+    for (int i = 0; i < overlay::kLabelFieldCount; ++i)
     {
-        return;
-    }
-    for (int m = 0; m < overlay::kLabelModeCount; ++m)
-    {
-        const auto mode = static_cast<overlay::LabelMode>(m);
-        if (ImGui::Selectable(overlay::LabelModeTitle(mode), mode == s.labels))
+        const auto field = static_cast<overlay::LabelField>(i);
+        if (!overlay::LabelFieldApplies(id, field))
         {
-            s.labels = mode;
+            continue;
+        }
+        const char *title = overlay::LabelFieldTitle(field);
+        const float width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x
+                          + ImGui::CalcTextSize(title).x;
+        ImGui::SameLine(0.0f, isFirst ? style.ItemSpacing.x : style.ItemSpacing.x * 2.0f);
+        if (!isFirst && ImGui::GetCursorScreenPos().x + width > right)
+        {
+            ImGui::NewLine();
+        }
+        isFirst = false;
+        bool isOn = overlay::GetLabelField(s.labels, field);
+        if (ImGui::Checkbox(title, &isOn))
+        {
+            overlay::SetLabelField(s.labels, field, isOn);
             Changed(a);
         }
     }
-    ImGui::EndCombo();
 }
 
-void DrawCoordsToggle(app::App &a, LayerSettings &s)
+// Layer-specific options under the label fields.
+void DrawLayerExtras(app::App &a, LayerId id, LayerSettings &s)
 {
-    ImGui::SameLine();
-    if (ImGui::Checkbox("coords", &s.showCoords))
+    if (id == LayerId::Npc || id == LayerId::Player)
     {
-        Changed(a);
+        if (ImGui::Checkbox("only while animating", &s.isAnimatingOnly))
+        {
+            Changed(a);
+        }
+    }
+    if (id == LayerId::Projectile)
+    {
+        ImGui::TextDisabled("Box where it lands, a line from where it was thrown. Refreshes "
+                            "every %d ms.", a.layers.config.fastRefreshMs);
+    }
+    if (id == LayerId::SpotAnim)
+    {
+        ImGui::TextDisabled("Graphics on a tile, from the event feed: each shows for %d s "
+                            "after it starts. Graphics on an npc or player are the "
+                            "'spot anim' label field.",
+                            static_cast<int>(overlay::kSpotAnimHoldMs / 1000));
     }
 }
 
@@ -254,11 +293,13 @@ void DrawLayerOptions(app::App &a, LayerId id, LayerSettings &s)
 {
     ImGui::PushID(static_cast<int>(id) + 100);
     ImGui::Indent(ImGui::GetFontSize() * 2.6f);
-    DrawLabelCombo(a, s);
-    DrawCoordsToggle(a, s);
+    DrawLabelFields(a, id, s);
+    DrawLayerExtras(a, id, s);
     if (id != LayerId::Self)
     {
         const float w = ImGui::GetFontSize() * 11.0f;
+        const int   maxCount = overlay::IsFastLayer(id) ? overlay::kMaxFastLayerCount
+                                                        : overlay::kMaxLayerCount;
         ImGui::SetNextItemWidth(w);
         if (ImGui::SliderInt("max distance (tiles)", &s.maxDistance, 0,
                              overlay::kMaxLayerDistance))
@@ -266,7 +307,7 @@ void DrawLayerOptions(app::App &a, LayerId id, LayerSettings &s)
             Changed(a);
         }
         ImGui::SetNextItemWidth(w);
-        if (ImGui::SliderInt("max count", &s.maxCount, 1, overlay::kMaxLayerCount))
+        if (ImGui::SliderInt("max count", &s.maxCount, 1, maxCount))
         {
             Changed(a);
         }
@@ -349,10 +390,59 @@ void DrawSummaryStats(app::App &a)
     char sent[32];
     char rpcs[32];
     std::snprintf(sent, sizeof(sent), "%u", overlay::TotalSentDraws(st));
-    std::snprintf(rpcs, sizeof(rpcs), "%u", st.rpcsLastRefresh);
+    std::snprintf(rpcs, sizeof(rpcs), "%u / %u", st.rpcsLastRefresh, st.rpcsLastFastRefresh);
     theme::HeroStat("draws in the agent's store", sent);
     ImGui::SameLine(0, ImGui::GetFontSize() * 2.5f);
-    theme::HeroStat("rpcs last refresh", rpcs, theme::kText);
+    theme::HeroStat("rpcs last refresh (main / fast)", rpcs, theme::kText);
+}
+
+void DrawTimingControls(app::App &a, LayerConfig &cfg)
+{
+    const float w = ImGui::GetFontSize() * 11.0f;
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::SliderInt("refresh (ms)", &cfg.refreshMs, overlay::kMinRefreshMs, 3000))
+    {
+        Changed(a);
+    }
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::SliderInt("fast refresh (ms)", &cfg.fastRefreshMs, overlay::kMinFastRefreshMs,
+                         1000))
+    {
+        Changed(a);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("projectiles, spot anims");
+}
+
+void DrawLabelControls(app::App &a, LayerConfig &cfg)
+{
+    const float w = ImGui::GetFontSize() * 11.0f;
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::SliderInt("label budget", &cfg.labelBudget, 0, overlay::kMaxLabelBudget))
+    {
+        Changed(a);
+    }
+    const overlay::LabelTally &main = a.layers.labels;
+    const overlay::LabelTally &fast = a.layers.fastLabels;
+    const uint32_t given  = main.given + fast.given;
+    const uint32_t wanted = main.wanted + fast.wanted;
+    const ImU32    tone   = given < wanted ? theme::kWarn : theme::kInfo;
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "labels %u of %u", given, wanted);
+    ImGui::SameLine();
+    theme::Pill(buf, Soft(tone), tone);
+    ImGui::SetNextItemWidth(w);
+    if (ImGui::SliderInt("label length (chars)", &cfg.tileLabelChars,
+                         overlay::kMinTileLabelChars, overlay::kMaxTileLabelChars))
+    {
+        Changed(a);
+    }
+    if (given < wanted)
+    {
+        ImGui::TextDisabled("Nearest get labels first; projectiles and spot anims get what "
+                            "the other layers leave. The agent has 64 text slots shared "
+                            "with the host and scripts; boxes need none.");
+    }
 }
 
 // How this session's agent takes entity highlights: one batch per layer, or
@@ -400,27 +490,8 @@ void DrawSummaryCard(app::App &a)
     ImGui::Spacing();
     DrawSummaryStats(a);
     ImGui::Spacing();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
-    if (ImGui::SliderInt("refresh (ms)", &cfg.refreshMs, overlay::kMinRefreshMs, 3000))
-    {
-        Changed(a);
-    }
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11.0f);
-    if (ImGui::SliderInt("label budget", &cfg.labelBudget, 0, overlay::kMaxLabelBudget))
-    {
-        Changed(a);
-    }
-    const overlay::LabelTally &lt = a.layers.labels;
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), "labels %u of %u", lt.given, lt.wanted);
-    ImGui::SameLine();
-    theme::Pill(buf, Soft(lt.given < lt.wanted ? theme::kWarn : theme::kInfo),
-                lt.given < lt.wanted ? theme::kWarn : theme::kInfo);
-    if (lt.given < lt.wanted)
-    {
-        ImGui::TextDisabled("Nearest get labels first. The agent has 64 text slots shared "
-                            "with the host and scripts; boxes need none.");
-    }
+    DrawTimingControls(a, cfg);
+    DrawLabelControls(a, cfg);
     theme::EndCard();
 }
 

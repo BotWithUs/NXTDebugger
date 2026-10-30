@@ -12,13 +12,15 @@
 // Overlay layers -- the pure half.
 //
 // The Layers panel draws live game state IN the game: one toggle per world
-// layer (npcs, players, self, locs, ground items), each pushed to the agent's
-// retained draw store as entity highlights it re-projects in-process. This
-// header is everything about that which does not need ImGui, App or a pipe:
-// settings, snapshot -> candidate collection, filter / distance / cap
-// selection, the key scheme, the diff against what was last sent, the batch
-// encoding and the reply classification. overlay/LayerSync.cpp drives it;
-// tests/LayerTests.cpp drives the same entry points.
+// layer (npcs, players, self, locs, ground items, projectiles, spot anims),
+// each pushed to the agent's retained draw store -- entity highlights for the
+// first five, world-space rect / line / text for the last two -- which the
+// agent re-projects in-process. This header is everything about that which
+// does not need ImGui, App or a pipe: settings, snapshot -> candidate
+// collection, filter / distance / cap selection, the key scheme, the diff
+// against what was last sent, the batch encoding and the reply
+// classification. overlay/LayerSync.cpp drives it; tests/LayerTests.cpp
+// drives the same entry points.
 //
 // Wire contract: Work/overlay-layers/contract.md. Keys are
 // `dbg:<layer>:<identity>`; the debugger only ever clears its own keys and
@@ -35,25 +37,84 @@ enum class LayerId : uint8_t
     Self,
     Loc,
     Ground,
+    Projectile,
+    SpotAnim,
 };
-constexpr int kLayerCount = 5;
+constexpr int kLayerCount = 7;
 
-enum class LabelMode : uint8_t
+// Entity layers (npc .. ground) draw highlight_entity items on the main
+// refresh. Fast layers (projectiles, spot anims) are short-lived world shapes
+// -- a tile box, a line, a caption -- on their own faster refresh.
+bool IsFastLayer(LayerId id);
+// Npc, player, self: the layers with animation / spot anim / combat fields.
+bool IsActorLayer(LayerId id);
+
+// --- label fields ------------------------------------------------------------
+
+// What a layer's caption shows, in this order. Fields a layer has no data for
+// (an animation on a loc) are ignored rather than refused, so one ctl / ini
+// line can set the same fields on every layer.
+struct LabelFields
 {
-    None,
-    Name,
-    NameId,
-    NameIdDistance,
+    bool showName     = true;
+    bool showId       = false;
+    bool showDistance = false;
+    bool showCoords   = false;   // "(x,y,plane)"
+    bool showAnim     = false;   // actors: animation id while one plays
+    bool showSpotAnim = false;   // actors: first spot anim (graphic) on them
+    bool showHp       = false;   // npcs: hp/maxHp (the snapshot has no player hp)
+    bool showCombat   = false;   // actors: combat level
+    bool showTarget   = false;   // actors: who they face; projectiles: source -> target
 };
-constexpr int kLabelModeCount = 4;
+
+enum class LabelField : uint8_t
+{
+    Name,
+    Id,
+    Distance,
+    Coords,
+    Anim,
+    SpotAnim,
+    Hp,
+    Combat,
+    Target,
+};
+constexpr int kLabelFieldCount = 9;
+
+const char *LabelFieldToken(LabelField f);   // "name", "id", "dist", "coords", "anim", ...
+const char *LabelFieldTitle(LabelField f);   // "name", "id", "distance", ...
+bool        ParseLabelField(std::string_view s, LabelField &outField);   // "distance" too
+bool        GetLabelField(const LabelFields &f, LabelField field);
+void        SetLabelField(LabelFields &io, LabelField field, bool isOn);
+// True when `field` means something on layer `id`.
+bool        LabelFieldApplies(LayerId id, LabelField field);
+
+// A `labels=` value. The pre-fields tokens none / name / name_id /
+// name_id_dist set name, id and distance and leave every other field as it
+// was (an old ini's `coords=1` line keeps working). Anything else is a comma
+// list of field tokens and sets exactly those; "" turns every field off.
+bool        ParseLabelFields(std::string_view s, LabelFields &io);
+// The comma list ParseLabelFields reads back: "name,id,coords".
+std::string LabelFieldsToken(const LabelFields &f);
 
 // --- limits ----------------------------------------------------------------
 
 constexpr int      kMaxLayerCount    = 256;   // debug_draw_set_batch item cap
+// A fast-layer draw is up to three commands (box, line, caption), and one
+// layer goes out in one batch.
+constexpr int      kMaxFastLayerCount = 80;
 constexpr int      kMaxLayerDistance = 104;   // a loaded scene is 104 tiles across
 constexpr int      kMinRefreshMs     = 100;
 constexpr int      kMaxRefreshMs     = 10000;
 constexpr int      kDefaultRefreshMs = 600;   // about one server tick
+// Projectiles fly for one to three seconds: their layers refresh on their own,
+// much faster timer.
+constexpr int      kMinFastRefreshMs     = 50;
+constexpr int      kMaxFastRefreshMs     = 2000;
+constexpr int      kDefaultFastRefreshMs = 150;
+// A world spot anim is reported once, when it starts (kEventSpotAnim); the
+// layer shows it this long.
+constexpr uint64_t kSpotAnimHoldMs   = 2000;
 constexpr uint32_t kMaxDrawKeyBytes  = 47;    // agent kMaxKeyChars 48 incl. NUL
 // Labels each take one of the agent's 64 text slots (kMaxTextSlots), shared with
 // every other connection (host, scripts, the Debug Draw panel). Boxes cost none,
@@ -63,33 +124,44 @@ constexpr int      kDefaultLabelBudget = 40;
 constexpr int      kMaxLabelBudget     = 64;
 // Retained commands store-wide, every connection together (kMaxDrawCmds).
 constexpr uint32_t kAgentStoreCap    = 512;
+// What the debugger lets itself hold across every layer; the rest stays free
+// for the host, scripts and the Debug Draw panel.
+constexpr uint32_t kStoreReserve        = 64;
+constexpr uint32_t kDebuggerStoreBudget = kAgentStoreCap - kStoreReserve;
+
+// A merged tile caption is cut to LayerConfig::tileLabelChars (the agent's
+// text slot holds 127).
+constexpr int      kMinTileLabelChars     = 24;
+constexpr int      kMaxTileLabelChars     = 120;
+constexpr int      kDefaultTileLabelChars = 48;
 
 constexpr size_t   kFilterChars = 64;
 
 struct LayerSettings
 {
-    bool      isEnabled   = false;
-    uint32_t  colorArgb   = 0xFFFFAB47u;
-    LabelMode labels      = LabelMode::Name;
-    bool      showCoords  = false;   // append "(x,y,plane)" to the label
-    int       maxDistance = 20;
-    int       maxCount    = 100;
-    char      filter[kFilterChars] = {};
+    bool        isEnabled       = false;
+    uint32_t    colorArgb       = 0xFFFFAB47u;
+    LabelFields labels;
+    bool        isAnimatingOnly = false;   // npc / player: only those playing an animation
+    int         maxDistance     = 20;
+    int         maxCount        = 100;
+    char        filter[kFilterChars] = {};
 };
 
 struct LayerConfig
 {
     LayerSettings layers[kLayerCount];
-    int           refreshMs   = kDefaultRefreshMs;
-    int           labelBudget = kDefaultLabelBudget;   // labels across every layer
+    int           refreshMs      = kDefaultRefreshMs;
+    int           fastRefreshMs  = kDefaultFastRefreshMs;   // projectiles, spot anims
+    int           labelBudget    = kDefaultLabelBudget;     // labels across every layer
+    int           tileLabelChars = kDefaultTileLabelChars;  // one merged caption's cap
 };
 
-const char *LayerToken(LayerId id);   // "npc", "player", "self", "loc", "ground"
+// "npc", "player", "self", "loc", "ground", "proj", "spot" (also read:
+// "projectile", "spotanim").
+const char *LayerToken(LayerId id);
 const char *LayerTitle(LayerId id);   // "NPCs", "Players", ...
 bool        ParseLayerToken(std::string_view s, LayerId &outId);
-const char *LabelModeToken(LabelMode m);   // "none", "name", "name_id", "name_id_dist"
-const char *LabelModeTitle(LabelMode m);
-bool        ParseLabelMode(std::string_view s, LabelMode &outMode);
 
 LayerSettings DefaultLayerSettings(LayerId id);
 LayerConfig   DefaultLayerConfig();
@@ -100,6 +172,8 @@ LayerConfig   DefaultLayerConfig();
 void SanitizeConfig(LayerConfig &io);
 
 bool AnyWorldLayerOn(const LayerConfig &c);
+// Any layer of one refresh group (IsFastLayer == isFast) on.
+bool AnyLayerOn(const LayerConfig &c, bool isFast);
 
 // --- candidates --------------------------------------------------------------
 
@@ -129,6 +203,9 @@ void RotatedFootprint(int32_t sizeX, int32_t sizeY, int rotation, int32_t &outW,
 // appearance id; the item id); `shownId` is the id
 // a label shows and `altId` a second id the filter also matches (npc
 // morph-resolved type, loc appearance id). -1 where a layer has none.
+//
+// A projectile's tile is where it lands (its target point), selectorId and
+// shownId its graphic id, serial its launch cycle, and from* its launch tile.
 struct LayerCandidate
 {
     int32_t     selectorId = -1;
@@ -142,24 +219,71 @@ struct LayerCandidate
     int32_t     w          = 0;   // footprint in tiles; 0 sends no w/h (locs send it)
     int32_t     h          = 0;
     std::string name;
+    // Actors. -1 where the snapshot has nothing.
+    int32_t     animationId = -1;
+    int32_t     spotAnimId  = -1;
+    int32_t     hp          = -1;
+    int32_t     maxHp       = -1;
+    int32_t     combatLevel = -1;
+    // Actors: who they face / follow. Projectiles: the receiving entity.
+    int32_t     targetIndex = -1;
+    std::string targetName;   // "" when the index names no one unambiguously
+    // Projectiles.
+    int32_t     serial      = 0;    // launch cycle: part of the key
+    int32_t     sourceIndex = -1;
+    int32_t     fromX       = -1;   // launch tile; -1 draws no line
+    int32_t     fromY       = -1;
 };
 
 // Everything on the local player's plane within `maxDistance` tiles, with
 // names (and loc footprints) resolved. Empty when the snapshot has no local
-// player in-world.
+// player in-world. The spot anim layer collects nothing here: see
+// CollectSpotAnims.
 void CollectCandidates(LayerId id, const nxt::ipc::Snapshot &s, int maxDistance,
                        const EntityLookup &lookup, std::vector<LayerCandidate> &out);
+
+// A world spot anim (a graphic on a tile, no entity) the event ring reported
+// starting. The snapshot carries none: the agent emits kEventSpotAnim once per
+// start and nothing when it ends, so the layer holds each for kSpotAnimHoldMs.
+struct SpotAnimSighting
+{
+    int32_t  spotAnimId = -1;
+    int32_t  tileX      = 0;
+    int32_t  tileY      = 0;
+    int32_t  plane      = 0;
+    uint64_t seenAtMs   = 0;
+};
+
+// One sighting per (id, tile, plane): a repeat start refreshes seenAtMs.
+void RecordSpotAnim(std::vector<SpotAnimSighting> &io, const SpotAnimSighting &s);
+// Drop sightings older than holdMs.
+void ExpireSpotAnims(std::vector<SpotAnimSighting> &io, uint64_t nowMs, uint64_t holdMs);
+void CollectSpotAnims(const std::vector<SpotAnimSighting> &sightings,
+                      const nxt::ipc::Snapshot &s, int maxDistance,
+                      std::vector<LayerCandidate> &out);
 
 // Name substring (case-insensitive) or, when the filter is all digits, an
 // exact match on any of the candidate's ids. An empty filter matches all.
 bool MatchesFilter(const LayerCandidate &c, const char *filter);
 
 // `dbg:<layer>:<identity>`. Identity: server index for npc / player, nothing
-// for self, `<id>:<x>:<y>:<plane>` for loc / ground (the contract's auto-key
-// shape, so two stacks of one item on one tile are one highlight).
+// for self, `<id>:<x>:<y>:<plane>` for loc / ground / spot (the contract's
+// auto-key shape, so two stacks of one item on one tile are one highlight),
+// `<gfx>:<launch cycle>:<source>:<target>` for a projectile (its tile moves
+// with its target, so the tile is not identity).
 std::string LayerKey(LayerId id, const LayerCandidate &c);
 // The prefix every key of a layer starts with: "dbg:npc:" ... and "dbg:self".
 std::string LayerKeyPrefix(LayerId id);
+
+// What one draw is on the wire. Entity layers send Entity; ExpandDraws turns
+// a fast layer's draw into its TileBox / Line / Text commands.
+enum class DrawPrim : uint8_t
+{
+    Entity,    // highlight_entity item, label inside
+    TileBox,   // world rect over the candidate's tile
+    Line,      // world line, launch tile centre -> candidate tile centre
+    Text,      // world text at the candidate tile centre: the label
+};
 
 struct DesiredDraw
 {
@@ -167,6 +291,7 @@ struct DesiredDraw
     LayerCandidate candidate;
     std::string    label;      // filled by ApplyLabels; empty draws no caption
     uint32_t       colorArgb = 0;
+    DrawPrim       prim      = DrawPrim::Entity;
 };
 
 struct Selection
@@ -175,30 +300,46 @@ struct Selection
     uint32_t                 matched = 0;   // M in "showing N of M"
 };
 
-// Filter, de-duplicate by key, sort nearest first (key breaks ties so the
-// order is stable between refreshes) and cap. `candidates` is consumed.
+// Filter (name / id, and animating-only for npc / player), de-duplicate by
+// key, sort nearest first (key breaks ties so the order is stable between
+// refreshes) and cap. `candidates` is consumed.
 Selection SelectLayer(LayerId id, const LayerSettings &s,
                       std::vector<LayerCandidate> &candidates);
 
-std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c,
-                        bool showCoords = false);
+// The caption's fields, space-separated in LabelField order: "Guard #3000 4t
+// (3204,3200,0) anim 422 lvl 21 -> Zezima". A field with no value this tick
+// (no animation playing) is left out.
+std::string FormatLabel(const LabelFields &fields, LayerId id, const LayerCandidate &c);
 // True when the layer's settings produce any caption at all.
-bool        WantsLabel(const LayerSettings &s);
+bool        WantsLabel(LayerId id, const LayerSettings &s);
+
+// --- store budget ------------------------------------------------------------
+
+// Commands one draw costs in the agent's store at most: 1 for an entity (its
+// label rides inside it); for a fast layer a box, a line when a projectile
+// travels, and a caption when the layer is labelled.
+uint32_t WireCommandCount(LayerId id, const LayerSettings &s, const DesiredDraw &d);
+
+// Drop the farthest draws across the enabled layers of one refresh group
+// until their worst-case command count fits `budget`. Returns how many were
+// dropped; each layer's `matched` is untouched, so it reads "showing N of M".
+uint32_t FitStoreBudget(const LayerConfig &cfg, bool isFast, Selection (&sel)[kLayerCount],
+                        uint32_t budget);
+
+// --- labels ------------------------------------------------------------------
 
 struct LabelTally
 {
     uint32_t given  = 0;   // N in "labels N of M"
-    uint32_t wanted = 0;   // M: tiles holding a draw whose layer's label mode is not None
+    uint32_t wanted = 0;   // M: tiles holding a draw whose layer wants a label
 };
-
-// A merged tile caption is cut to this many chars (the agent allows 127).
-constexpr size_t kMaxTileLabelChars = 48;
 
 // One caption for every label wanted on one tile, given in caption order:
 // identical labels merge as "Name x3", different ones join with " | " (the
 // agent draws a caption as a single line), and what does not fit in
-// kMaxTileLabelChars ends "... +N more".
-std::string MergeTileLabels(const std::vector<std::string> &labels);
+// maxChars ends "... +N more".
+std::string MergeTileLabels(const std::vector<std::string> &labels,
+                            size_t maxChars = kDefaultTileLabelChars);
 
 // Labels are grouped by world tile (x, y, plane; a loc at its footprint
 // origin) across every layer, so entities sharing a tile do not stack their
@@ -208,8 +349,21 @@ std::string MergeTileLabels(const std::vector<std::string> &labels);
 // tiles get a caption, nearest to the player first (ties: the carrier's
 // layer order). A draw past the budget is still drawn, just without a
 // caption. Keys never change: a carrier moving to another draw is a label
-// change on both, which the diff re-sends as a restyle.
+// change on both, which the diff re-sends as a restyle. Captions are cut to
+// cfg.tileLabelChars. Entity layers only; fast layers' draws are untouched.
 LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount]);
+
+// The same for the fast layers (projectile, then spot anim), merged among
+// themselves on their own refresh, within `budget` captions -- what the
+// entity layers left of cfg.labelBudget.
+LabelTally ApplyFastLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount], int budget);
+
+// A fast layer's draws as wire commands: per draw a TileBox under its key, a
+// Line `<key>:l` for a projectile whose launch tile differs from its target,
+// and a Text `<key>:t` when it carries a label. Entity layers come back as
+// given. Each command has its own key, so the diff and the sent map need no
+// idea of a compound draw.
+std::vector<DesiredDraw> ExpandDraws(LayerId id, const std::vector<DesiredDraw> &draws);
 
 // --- diff --------------------------------------------------------------------
 
@@ -221,7 +375,8 @@ struct SentDraw
 using SentMap = std::unordered_map<std::string, SentDraw>;
 
 // What a draw looks like on the wire beyond its key: a resend is needed only
-// when this changes (or the TTL is running out).
+// when this changes (or the TTL is running out). An entity's position is not
+// in it (the agent follows the entity); a world command's geometry is.
 std::string DrawSignature(const DesiredDraw &d);
 
 // Draws are sent with a TTL several refresh intervals long, so a debugger that
@@ -229,6 +384,10 @@ std::string DrawSignature(const DesiredDraw &d);
 // re-sent once it is older than ResendAgeMs, two intervals before it expires.
 uint32_t DrawTtlMs(int refreshMs);
 uint64_t ResendAgeMs(int refreshMs);
+// The fast layers' short TTL: five fast intervals, at least 750 ms, so a
+// landed projectile the debugger could not clear is gone within a second.
+uint32_t FastDrawTtlMs(int fastRefreshMs);
+uint64_t FastResendAgeMs(int fastRefreshMs);
 
 struct LayerDiff
 {
@@ -251,7 +410,9 @@ void MarkAllStale(SentMap &io);
 
 // --- wire --------------------------------------------------------------------
 
-// {items: [...]} for the selected draws. False on encode overflow.
+// {items: [...]} for the selected draws: `kind: "entity"` for an Entity draw,
+// world-space rect / line / text (coordinates in the agent's 256 sub-tiles
+// per tile) for the others. False on encode overflow.
 bool EncodeLayerBatch(LayerId id, const std::vector<DesiredDraw> &want,
                       const std::vector<size_t> &idx, uint32_t ttlMs,
                       std::vector<uint8_t> &out);
@@ -289,7 +450,8 @@ BatchResult ClassifyBatchReply(rpc::CallStatus status, const std::vector<uint8_t
 // but do answer the single highlight_entity RPC for npc / player / self. On
 // that refusal the session drops to one highlight_entity per draw, capped per
 // refresh so a crowd cannot flood the pipe. Detected once per connection and
-// detected again after a reconnect or a Retry.
+// detected again after a reconnect or a Retry. Fast layers never take part:
+// they send geometry kinds every agent knows, always batched.
 
 enum class AgentEntityMode : uint8_t
 {

@@ -4,10 +4,12 @@
 #include "app/EntityName.h"
 #include "cache/Json.h"
 #include "ctl/Commands.h"
+#include "ipc/Events.h"
 #include "wire/SnapshotReader.h"
 
 #include <Windows.h>
 
+#include <cstring>
 #include <vector>
 
 namespace nxtdbg::overlay
@@ -105,10 +107,20 @@ void TrackCache(app::App &a)
 
 // --- rpc ---------------------------------------------------------------------
 
+uint32_t TtlFor(const LayerConfig &c, LayerId id)
+{
+    return IsFastLayer(id) ? FastDrawTtlMs(c.fastRefreshMs) : DrawTtlMs(c.refreshMs);
+}
+
+uint64_t ResendAgeFor(const LayerConfig &c, LayerId id)
+{
+    return IsFastLayer(id) ? FastResendAgeMs(c.fastRefreshMs) : ResendAgeMs(c.refreshMs);
+}
+
 rpc::CallStatus Call(app::App &a, const char *method, const std::vector<uint8_t> &body,
                      std::vector<uint8_t> &outReply)
 {
-    ++a.layers.rpcsLastRefresh;
+    ++a.layers.rpcCount;
     return a.rpc.Call(method, body.data(), static_cast<uint32_t>(body.size()), outReply,
                       kLayerCallTimeoutMs);
 }
@@ -182,7 +194,7 @@ bool SendBatch(app::App &a, LayerId id, const Selection &sel, const LayerDiff &d
     LayerRuntime        &rt = st.runtime[Idx(id)];
     std::vector<uint8_t> body;
     std::vector<uint8_t> reply;
-    if (!EncodeLayerBatch(id, sel.draws, diff.toSend, DrawTtlMs(st.config.refreshMs), body))
+    if (!EncodeLayerBatch(id, sel.draws, diff.toSend, TtlFor(st.config, id), body))
     {
         rt.message = "batch too large to encode";
         return true;
@@ -190,10 +202,14 @@ bool SendBatch(app::App &a, LayerId id, const Selection &sel, const LayerDiff &d
     const rpc::CallStatus status = Call(a, "debug_draw_set_batch", body, reply);
     const BatchResult     res    = ClassifyBatchReply(status, reply,
                                                       static_cast<uint32_t>(diff.toSend.size()));
-    st.agentMode = ModeAfterBatch(st.agentMode, res);
-    if (st.agentMode == AgentEntityMode::PerEntity)
+    // Fast layers send geometry kinds, which say nothing about entity items.
+    if (!IsFastLayer(id))
     {
-        return false;
+        st.agentMode = ModeAfterBatch(st.agentMode, res);
+        if (st.agentMode == AgentEntityMode::PerEntity)
+        {
+            return false;
+        }
     }
     ApplyBatchResult(rt, sel, diff, res, nowMs);
     return true;
@@ -303,11 +319,11 @@ void SendLayer(app::App &a, LayerId id, const Selection &sel, uint64_t nowMs,
 {
     LayerSyncState &st   = a.layers;
     LayerRuntime   &rt   = st.runtime[Idx(id)];
-    const LayerDiff diff = DiffLayer(rt.sent, sel.draws, nowMs, ResendAgeMs(st.config.refreshMs));
+    const LayerDiff diff = DiffLayer(rt.sent, sel.draws, nowMs, ResendAgeFor(st.config, id));
     if (!diff.toSend.empty())
     {
-        const bool isBatched = st.agentMode != AgentEntityMode::PerEntity
-                            && SendBatch(a, id, sel, diff, nowMs);
+        const bool canBatch  = IsFastLayer(id) || st.agentMode != AgentEntityMode::PerEntity;
+        const bool isBatched = canBatch && SendBatch(a, id, sel, diff, nowMs);
         if (!isBatched)
         {
             SendPerEntity(a, id, sel, diff, nowMs, ioCallBudget);
@@ -326,27 +342,74 @@ void SendLayer(app::App &a, LayerId id, const Selection &sel, uint64_t nowMs,
 
 // --- refresh -----------------------------------------------------------------
 
-void SelectAll(app::App &a, const nxt::ipc::Snapshot &snap, Selection (&sel)[kLayerCount])
+bool IsLive(const LayerSyncState &st, int i, bool isFast)
+{
+    return IsFastLayer(IdAt(i)) == isFast && st.config.layers[i].isEnabled
+        && !st.runtime[i].isRejected;
+}
+
+void SelectAll(app::App &a, const nxt::ipc::Snapshot &snap, bool isFast,
+               Selection (&sel)[kLayerCount])
 {
     LayerSyncState    &st = a.layers;
     const EntityLookup lookup{ &LookupName, &LookupLocSize, &a };
     std::vector<LayerCandidate> candidates;
     for (int i = 0; i < kLayerCount; ++i)
     {
-        const LayerSettings &s  = st.config.layers[i];
-        LayerRuntime        &rt = st.runtime[i];
-        if (!s.isEnabled || rt.isRejected)
+        if (!IsLive(st, i, isFast))
         {
             continue;
         }
-        CollectCandidates(IdAt(i), snap, s.maxDistance, lookup, candidates);
-        sel[i]     = SelectLayer(IdAt(i), s, candidates);
-        rt.matched = sel[i].matched;
-        rt.shown   = static_cast<uint32_t>(sel[i].draws.size());
+        const LayerSettings &s = st.config.layers[i];
+        if (IdAt(i) == LayerId::SpotAnim)
+        {
+            CollectSpotAnims(st.spotAnims, snap, s.maxDistance, candidates);
+        }
+        else
+        {
+            CollectCandidates(IdAt(i), snap, s.maxDistance, lookup, candidates);
+        }
+        sel[i] = SelectLayer(IdAt(i), s, candidates);
+        st.runtime[i].matched = sel[i].matched;
     }
 }
 
-void Refresh(app::App &a, uint64_t nowMs)
+// Commands the debugger holds for the OTHER refresh group: this group gets
+// what is left of kDebuggerStoreBudget.
+uint32_t StoreLeft(const LayerSyncState &st, bool isFast)
+{
+    uint32_t held = 0;
+    for (int i = 0; i < kLayerCount; ++i)
+    {
+        if (IsFastLayer(IdAt(i)) != isFast)
+        {
+            held += static_cast<uint32_t>(st.runtime[i].sent.size());
+        }
+    }
+    return held >= kDebuggerStoreBudget ? 0 : kDebuggerStoreBudget - held;
+}
+
+// Labels: the entity layers spend cfg.labelBudget first; the fast layers get
+// what the last entity refresh left. Fast draws then become their commands.
+void LabelGroup(LayerSyncState &st, bool isFast, Selection (&sel)[kLayerCount])
+{
+    if (!isFast)
+    {
+        st.labels = ApplyLabels(st.config, sel);
+        return;
+    }
+    const int left = st.config.labelBudget - static_cast<int>(st.labels.given);
+    st.fastLabels  = ApplyFastLabels(st.config, sel, left > 0 ? left : 0);
+    for (int i = 0; i < kLayerCount; ++i)
+    {
+        if (IsFastLayer(IdAt(i)))
+        {
+            sel[i].draws = ExpandDraws(IdAt(i), sel[i].draws);
+        }
+    }
+}
+
+void Refresh(app::App &a, bool isFast, uint64_t nowMs)
 {
     LayerSyncState &st = a.layers;
     const nxt::ipc::Snapshot *snap = wire::CurrentSnapshot(a.session);
@@ -357,16 +420,60 @@ void Refresh(app::App &a, uint64_t nowMs)
     // The snapshot pointer is valid for this frame only: select (which copies
     // everything it keeps) before the first RPC blocks the frame.
     Selection sel[kLayerCount];
-    SelectAll(a, *snap, sel);
-    st.labels = ApplyLabels(st.config, sel);
+    SelectAll(a, *snap, isFast, sel);
+    FitStoreBudget(st.config, isFast, sel, StoreLeft(st, isFast));
+    for (int i = 0; i < kLayerCount; ++i)
+    {
+        if (IsLive(st, i, isFast))
+        {
+            st.runtime[i].shown = static_cast<uint32_t>(sel[i].draws.size());
+        }
+    }
+    LabelGroup(st, isFast, sel);
     uint32_t callBudget = kMaxEntityCallsPerRefresh;   // per-entity mode only
     for (int i = 0; i < kLayerCount; ++i)
     {
-        if (st.config.layers[i].isEnabled && !st.runtime[i].isRejected)
+        if (IsLive(st, i, isFast))
         {
             SendLayer(a, IdAt(i), sel[i], nowMs, callBudget);
         }
     }
+}
+
+// New world spot anim starts off the event ring since the last read. The
+// first read after the layer turns on (or a reconnect) only anchors on the
+// newest event, so history is not replayed as fresh.
+void TrackSpotAnims(app::App &a, uint64_t nowMs)
+{
+    LayerSyncState &st     = a.layers;
+    const auto     &log    = a.eventBacklog;
+    const uint64_t  newest = log.empty() ? 0 : log.back().seq;
+    if (!st.config.layers[Idx(LayerId::SpotAnim)].isEnabled)
+    {
+        st.spotAnims.clear();
+        st.spotSeq = kNoSpotSeq;
+        return;
+    }
+    if (st.spotSeq == kNoSpotSeq || newest < st.spotSeq)
+    {
+        st.spotSeq = newest;
+    }
+    for (auto it = log.rbegin(); it != log.rend() && it->seq > st.spotSeq; ++it)
+    {
+        nxt::ipc::SpotAnimBody body{};
+        if (it->type != nxt::ipc::kEventSpotAnim || it->bodyLen < sizeof(body))
+        {
+            continue;
+        }
+        std::memcpy(&body, it->body, sizeof(body));
+        if (body.targetServerIndex < 0)   // entity-attached ones are a label field
+        {
+            RecordSpotAnim(st.spotAnims, SpotAnimSighting{ body.spotAnimId, body.tileX,
+                                                           body.tileY, body.plane, nowMs });
+        }
+    }
+    st.spotSeq = newest;
+    ExpireSpotAnims(st.spotAnims, nowMs, kSpotAnimHoldMs);
 }
 
 // The agent drops everything a connection drew when it closes, and a new
@@ -386,10 +493,13 @@ void TrackConnection(app::App &a)
             rt.isRejected = false;   // a new agent may support what the old did not
             rt.message.clear();
         }
-        st.isRefreshForced = true;
-        st.wasConnected    = isConnected;
-        st.connectedPid    = pid;
-        st.agentMode       = AgentEntityMode::Unknown;
+        st.isRefreshForced     = true;
+        st.isFastRefreshForced = true;
+        st.wasConnected        = isConnected;
+        st.connectedPid        = pid;
+        st.agentMode           = AgentEntityMode::Unknown;
+        st.spotAnims.clear();
+        st.spotSeq             = kNoSpotSeq;
     }
 }
 
@@ -413,6 +523,36 @@ void ReleaseDisabled(app::App &a)
             ClearLayer(a, rt);
         }
     }
+}
+
+bool IsDue(bool &ioIsForced, uint64_t &ioLastMs, int intervalMs, uint64_t nowMs)
+{
+    const bool isDue = ioIsForced || ioLastMs == 0
+                    || nowMs - ioLastMs >= static_cast<uint64_t>(intervalMs);
+    if (isDue)
+    {
+        ioIsForced = false;
+        ioLastMs   = nowMs;
+    }
+    return isDue;
+}
+
+// One refresh of one group. Disabled layers of either group are released
+// first; the entity group also keeps the cache-backed names current.
+void RunRefresh(app::App &a, bool isFast, uint64_t nowMs)
+{
+    ReleaseDisabled(a);
+    if (!AnyLayerOn(a.layers.config, isFast))
+    {
+        // An idle group holds no captions: the other group's budget is whole.
+        (isFast ? a.layers.fastLabels : a.layers.labels) = LabelTally{};
+        return;
+    }
+    if (!isFast)
+    {
+        TrackCache(a);
+    }
+    Refresh(a, isFast, nowMs);
 }
 
 }   // namespace
@@ -457,28 +597,27 @@ void UpdateLayers(app::App &a)
     }
     // Paced like a refresh even when only releasing: a clear the agent does
     // not answer is retried on the timer, not every frame.
-    const uint64_t now   = GetTickCount64();
-    const bool     isDue = st.isRefreshForced || st.lastRefreshMs == 0
-                        || now - st.lastRefreshMs >= static_cast<uint64_t>(st.config.refreshMs);
-    if (!isDue)
+    const uint64_t now = GetTickCount64();
+    if (IsDue(st.isRefreshForced, st.lastRefreshMs, st.config.refreshMs, now))
     {
-        return;
+        const uint32_t before = st.rpcCount;
+        RunRefresh(a, false, now);
+        st.rpcsLastRefresh = st.rpcCount - before;
     }
-    st.isRefreshForced = false;
-    st.lastRefreshMs   = now;
-    st.rpcsLastRefresh = 0;
-    ReleaseDisabled(a);
-    if (AnyWorldLayerOn(st.config))
+    if (IsDue(st.isFastRefreshForced, st.lastFastRefreshMs, st.config.fastRefreshMs, now))
     {
-        TrackCache(a);
-        Refresh(a, now);
+        const uint32_t before = st.rpcCount;
+        TrackSpotAnims(a, now);
+        RunRefresh(a, true, now);
+        st.rpcsLastFastRefresh = st.rpcCount - before;
     }
 }
 
 void NotifyLayerConfigChanged(LayerSyncState &st)
 {
     SanitizeConfig(st.config);
-    st.isRefreshForced = true;
+    st.isRefreshForced     = true;
+    st.isFastRefreshForced = true;
 }
 
 void RetryLayer(LayerSyncState &st, LayerId id)
@@ -486,8 +625,9 @@ void RetryLayer(LayerSyncState &st, LayerId id)
     LayerRuntime &rt = st.runtime[Idx(id)];
     rt.isRejected = false;
     rt.message.clear();
-    st.agentMode       = AgentEntityMode::Unknown;
-    st.isRefreshForced = true;
+    st.agentMode           = AgentEntityMode::Unknown;
+    st.isRefreshForced     = true;
+    st.isFastRefreshForced = true;
 }
 
 uint32_t TotalSentDraws(const LayerSyncState &st)

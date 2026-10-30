@@ -5,6 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace nxtdbg::app { struct App; }
 
@@ -16,6 +17,11 @@ namespace nxtdbg::app { struct App; }
 //   * refreshes on a timer (LayerConfig::refreshMs) and only while a world
 //     layer is on; at most one debug_draw_set_batch and one debug_draw_clear
 //     per layer per refresh, never one RPC per entity;
+//   * projectiles and spot anims refresh on their own faster timer
+//     (LayerConfig::fastRefreshMs) with a short TTL, same one-batch rule;
+//     spot anims come off the event ring (App::eventBacklog), not the
+//     snapshot;
+//   * every layer together stays inside kDebuggerStoreBudget commands;
 //   * unticking a layer clears exactly its keys, at once;
 //   * detach and app exit clear every dbg: key it sent. It never calls
 //     debug_draw_clear_all -- the host and scripts share the overlay;
@@ -29,6 +35,9 @@ namespace nxtdbg::app { struct App; }
 
 namespace nxtdbg::overlay
 {
+
+// LayerSyncState::spotSeq before anything was read.
+constexpr uint64_t kNoSpotSeq = UINT64_MAX;
 
 struct LayerRuntime
 {
@@ -55,6 +64,16 @@ struct LayerSyncState
     LabelTally   labels;               // "labels N of M" from the last refresh
     uint32_t     rpcsLastRefresh = 0;
     bool         wasCacheOpen    = false;
+    // Fast layers (projectiles, spot anims): their own timer and label tally.
+    uint64_t     lastFastRefreshMs     = 0;
+    bool         isFastRefreshForced   = false;
+    LabelTally   fastLabels;
+    uint32_t     rpcsLastFastRefresh   = 0;
+    uint32_t     rpcCount              = 0;   // every layer RPC, running
+    // World spot anims seen on the event ring, and the last event seq read.
+    // kNoSpotSeq: re-anchor on the newest event (layer just on, reconnect).
+    std::vector<SpotAnimSighting> spotAnims;
+    uint64_t     spotSeq               = kNoSpotSeq;
     // Memoised cache lookups. Names key on (kind << 32 | id); loc sizes on id.
     std::unordered_map<int64_t, std::string>                  names;
     std::unordered_map<int32_t, std::pair<int32_t, int32_t>>  locSizes;
