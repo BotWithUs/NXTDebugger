@@ -245,6 +245,14 @@ void TestLabels()
     CheckStr("label name+id+dist",
              ov::FormatLabel(LabelMode::NameIdDistance, LayerId::Ground, c), "Coins x250 #995 3t");
     CheckStr("label none", ov::FormatLabel(LabelMode::None, LayerId::Ground, c), "");
+    CheckStr("label coords only",
+             ov::FormatLabel(LabelMode::None, LayerId::Ground, c, true),
+             ("(" + std::to_string(c.tileX) + "," + std::to_string(c.tileY) + ","
+                 + std::to_string(c.plane) + ")").c_str());
+    CheckStr("label name + coords",
+             ov::FormatLabel(LabelMode::Name, LayerId::Ground, c, true),
+             ("Coins x250 (" + std::to_string(c.tileX) + "," + std::to_string(c.tileY) + ","
+                 + std::to_string(c.plane) + ")").c_str());
 
     ov::LayerConfig cfg = ov::DefaultLayerConfig();
     Selection sel[ov::kLayerCount];

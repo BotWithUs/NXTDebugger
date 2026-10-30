@@ -405,7 +405,7 @@ std::vector<TileGroup> GroupWantsByTile(const LayerConfig &cfg, Selection (&sel)
     for (int rank = 0; rank < kLayerCount; ++rank)
     {
         const LayerId id       = kLabelOrder[rank];
-        const bool    isWanted = cfg.layers[Idx(id)].labels != LabelMode::None;
+        const bool    isWanted = WantsLabel(cfg.layers[Idx(id)]);
         for (DesiredDraw &d : sel[Idx(id)].draws)
         {
             d.label.clear();
@@ -682,11 +682,22 @@ Selection SelectLayer(LayerId id, const LayerSettings &s, std::vector<LayerCandi
     return sel;
 }
 
-std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c)
+bool WantsLabel(const LayerSettings &s)
+{
+    return s.labels != LabelMode::None || s.showCoords;
+}
+
+std::string FormatCoords(const LayerCandidate &c)
+{
+    return "(" + std::to_string(c.tileX) + "," + std::to_string(c.tileY) + ","
+         + std::to_string(c.plane) + ")";
+}
+
+std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c, bool showCoords)
 {
     if (mode == LabelMode::None)
     {
-        return {};
+        return showCoords ? FormatCoords(c) : std::string();
     }
     std::string text = c.name.empty() ? std::string("?") : c.name;
     if (id == LayerId::Ground && c.quantity > 1)
@@ -700,6 +711,10 @@ std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c)
     if (mode == LabelMode::NameIdDistance)
     {
         text += " " + std::to_string(c.distance) + "t";
+    }
+    if (showCoords)
+    {
+        text += " " + FormatCoords(c);
     }
     return text;
 }
@@ -755,7 +770,8 @@ LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount])
         std::vector<std::string> labels;
         for (const LabelWant &w : groups[i].wants)
         {
-            labels.push_back(FormatLabel(cfg.layers[Idx(w.id)].labels, w.id, w.draw->candidate));
+            const LayerSettings &ls = cfg.layers[Idx(w.id)];
+            labels.push_back(FormatLabel(ls.labels, w.id, w.draw->candidate, ls.showCoords));
         }
         groups[i].wants.front().draw->label = MergeTileLabels(labels);
         ++tally.given;

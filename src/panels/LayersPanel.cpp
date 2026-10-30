@@ -75,6 +75,7 @@ bool ReadLayerLine(LayerSettings &s, const char *field, const char *value)
     if (std::strcmp(field, "enabled") == 0)      { s.isEnabled = std::atoi(value) != 0; }
     else if (std::strcmp(field, "color") == 0)   { s.colorArgb = std::strtoul(value, nullptr, 16); }
     else if (std::strcmp(field, "labels") == 0)  { overlay::ParseLabelMode(value, s.labels); }
+    else if (std::strcmp(field, "coords") == 0)  { s.showCoords = std::atoi(value) != 0; }
     else if (std::strcmp(field, "distance") == 0) { s.maxDistance = std::atoi(value); }
     else if (std::strcmp(field, "count") == 0)   { s.maxCount = std::atoi(value); }
     else if (std::strcmp(field, "filter") == 0)
@@ -131,6 +132,7 @@ void IniWriteAll(ImGuiContext *, ImGuiSettingsHandler *h, ImGuiTextBuffer *out)
         out->appendf("%s.enabled=%d\n", tok, s.isEnabled ? 1 : 0);
         out->appendf("%s.color=%08X\n", tok, s.colorArgb);
         out->appendf("%s.labels=%s\n", tok, overlay::LabelModeToken(s.labels));
+        out->appendf("%s.coords=%d\n", tok, s.showCoords ? 1 : 0);
         out->appendf("%s.distance=%d\n", tok, s.maxDistance);
         out->appendf("%s.count=%d\n", tok, s.maxCount);
         out->appendf("%s.filter=%s\n", tok, s.filter);
@@ -239,11 +241,21 @@ void DrawLabelCombo(app::App &a, LayerSettings &s)
     ImGui::EndCombo();
 }
 
+void DrawCoordsToggle(app::App &a, LayerSettings &s)
+{
+    ImGui::SameLine();
+    if (ImGui::Checkbox("coords", &s.showCoords))
+    {
+        Changed(a);
+    }
+}
+
 void DrawLayerOptions(app::App &a, LayerId id, LayerSettings &s)
 {
     ImGui::PushID(static_cast<int>(id) + 100);
     ImGui::Indent(ImGui::GetFontSize() * 2.6f);
     DrawLabelCombo(a, s);
+    DrawCoordsToggle(a, s);
     if (id != LayerId::Self)
     {
         const float w = ImGui::GetFontSize() * 11.0f;

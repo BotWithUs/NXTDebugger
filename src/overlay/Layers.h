@@ -71,6 +71,7 @@ struct LayerSettings
     bool      isEnabled   = false;
     uint32_t  colorArgb   = 0xFFFFAB47u;
     LabelMode labels      = LabelMode::Name;
+    bool      showCoords  = false;   // append "(x,y,plane)" to the label
     int       maxDistance = 20;
     int       maxCount    = 100;
     char      filter[kFilterChars] = {};
@@ -179,7 +180,10 @@ struct Selection
 Selection SelectLayer(LayerId id, const LayerSettings &s,
                       std::vector<LayerCandidate> &candidates);
 
-std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c);
+std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c,
+                        bool showCoords = false);
+// True when the layer's settings produce any caption at all.
+bool        WantsLabel(const LayerSettings &s);
 
 struct LabelTally
 {

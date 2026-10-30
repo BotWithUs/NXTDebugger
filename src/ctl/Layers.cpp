@@ -90,6 +90,10 @@ bool SetLayerField(LayerSettings &s, const std::string &field, const JsonValue &
     {
         isOk = overlay::ParseLabelMode(v.AsString(), s.labels);
     }
+    else if (field == "coords")
+    {
+        isOk = ParseSwitch(v, s.showCoords);
+    }
     else if (field == "max_distance" || field == "max_count")
     {
         int &target = field == "max_count" ? s.maxCount : s.maxDistance;
@@ -181,6 +185,7 @@ JsonValue LayerJson(const app::App &a, int i)
     Put(o, "enabled", JBool(s.isEnabled));
     Put(o, "color", JStr(color));
     Put(o, "labels", JStr(overlay::LabelModeToken(s.labels)));
+    Put(o, "coords", JBool(s.showCoords));
     Put(o, "max_distance", JInt(s.maxDistance));
     Put(o, "max_count", JInt(s.maxCount));
     Put(o, "filter", JStr(s.filter));
