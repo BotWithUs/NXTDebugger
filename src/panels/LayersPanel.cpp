@@ -3,6 +3,7 @@
 #include "app/App.h"
 #include "app/Theme.h"
 #include "overlay/LayerSync.h"
+#include "overlay/OverlayWindow.h"
 #include "rpc/DrawParams.h"
 
 #include "imgui.h"
@@ -314,6 +315,14 @@ void DrawInterfacesCard(app::App &a)
     ImGui::SameLine();
     ImGui::TextUnformatted("Component boxes");
     ImGui::TextDisabled("Paints the Interfaces panel's selected interface over the game.");
+    if (a.overlayEnabled && !overlay::HasVisibleBoxes(a.interfaceView))
+    {
+        // The overlay window draws no text of its own; it stays hidden instead.
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::kWarn), "%s",
+                           a.interfaceView.iface < 0
+                               ? "Nothing to draw: select an interface in the Interfaces panel."
+                               : "Nothing to draw: the interface has no visible components.");
+    }
     if (ImGui::Checkbox("Label every component", &a.overlayShowAllLabels))
     {
         ImGui::MarkIniSettingsDirty();

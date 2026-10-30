@@ -184,12 +184,27 @@ std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c);
 struct LabelTally
 {
     uint32_t given  = 0;   // N in "labels N of M"
-    uint32_t wanted = 0;   // M: draws on a layer whose label mode is not None
+    uint32_t wanted = 0;   // M: tiles holding a draw whose layer's label mode is not None
 };
 
-// Give labels to at most cfg.labelBudget draws across every layer, nearest to
-// the player first whichever layer they are on (ties: self, npc, player,
-// ground, loc). A draw past the budget is still drawn, just without a caption.
+// A merged tile caption is cut to this many chars (the agent allows 127).
+constexpr size_t kMaxTileLabelChars = 48;
+
+// One caption for every label wanted on one tile, given in caption order:
+// identical labels merge as "Name x3", different ones join with " | " (the
+// agent draws a caption as a single line), and what does not fit in
+// kMaxTileLabelChars ends "... +N more".
+std::string MergeTileLabels(const std::vector<std::string> &labels);
+
+// Labels are grouped by world tile (x, y, plane; a loc at its footprint
+// origin) across every layer, so entities sharing a tile do not stack their
+// captions. Each tile gets one caption, carried by its first draw in layer
+// order (self, player, npc, ground, loc), nearest first within a layer; the
+// tile's other draws keep their box with no label. At most cfg.labelBudget
+// tiles get a caption, nearest to the player first (ties: the carrier's
+// layer order). A draw past the budget is still drawn, just without a
+// caption. Keys never change: a carrier moving to another draw is a label
+// change on both, which the diff re-sends as a restyle.
 LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount]);
 
 // --- diff --------------------------------------------------------------------

@@ -55,11 +55,16 @@ constexpr const char *kLabelTitles[kLabelModeCount] = {
     "None", "Name", "Name + id", "Name + id + distance",
 };
 
-// Label priority across layers: the one thing always worth a caption first,
-// then what moves, then what does not.
+// Label priority across layers, and the order names join in on a shared tile:
+// the one thing always worth a caption first, then what moves, then what does
+// not.
 constexpr LayerId kLabelOrder[kLayerCount] = {
-    LayerId::Self, LayerId::Npc, LayerId::Player, LayerId::Ground, LayerId::Loc,
+    LayerId::Self, LayerId::Player, LayerId::Npc, LayerId::Ground, LayerId::Loc,
 };
+
+// The agent draws a caption as one line (no '\n', no offset), so the names
+// sharing a tile join on that line.
+constexpr const char *kLabelJoin = " | ";
 
 int Idx(LayerId id)
 {
@@ -367,6 +372,102 @@ bool IsCapacityError(const std::string &error)
     return error.find(" full") != std::string::npos;
 }
 
+// --- tile labels -------------------------------------------------------------
+
+struct LabelWant
+{
+    DesiredDraw *draw;
+    LayerId      id;
+    int          rank;   // position in kLabelOrder
+};
+
+// Every labelled draw on one world tile (a loc counts at its footprint origin).
+struct TileGroup
+{
+    int32_t                distance;   // nearest member
+    std::vector<LabelWant> wants;      // layer order, then nearest; wants[0] carries
+};
+
+std::string TileKey(const LayerCandidate &c)
+{
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%d:%d:%d", c.tileX, c.tileY, c.plane);
+    return buf;
+}
+
+// Clears every label and groups the draws whose layer wants one by tile. A
+// layer's draws are already nearest first and layers are visited in
+// kLabelOrder, so a group's members arrive in caption order.
+std::vector<TileGroup> GroupWantsByTile(const LayerConfig &cfg, Selection (&sel)[kLayerCount])
+{
+    std::vector<TileGroup>                  groups;
+    std::unordered_map<std::string, size_t> byTile;
+    for (int rank = 0; rank < kLayerCount; ++rank)
+    {
+        const LayerId id       = kLabelOrder[rank];
+        const bool    isWanted = cfg.layers[Idx(id)].labels != LabelMode::None;
+        for (DesiredDraw &d : sel[Idx(id)].draws)
+        {
+            d.label.clear();
+            if (!isWanted)
+            {
+                continue;
+            }
+            const auto it = byTile.emplace(TileKey(d.candidate), groups.size());
+            if (it.second)
+            {
+                groups.push_back(TileGroup{ d.candidate.distance, {} });
+            }
+            TileGroup &g = groups[it.first->second];
+            g.distance = std::min(g.distance, d.candidate.distance);
+            g.wants.push_back(LabelWant{ &d, id, rank });
+        }
+    }
+    return groups;
+}
+
+std::string JoinParts(const std::vector<std::string> &parts, size_t count)
+{
+    std::string out;
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (i > 0)
+        {
+            out += kLabelJoin;
+        }
+        out += parts[i];
+    }
+    return out;
+}
+
+std::string MoreSuffix(size_t dropped)
+{
+    return dropped == 0 ? std::string("...") : "... +" + std::to_string(dropped) + " more";
+}
+
+// The parts joined within maxChars. Whole parts are dropped from the end and
+// counted ("A | B... +3 more"); a first part too long on its own is cut.
+std::string JoinWithin(const std::vector<std::string> &parts, size_t maxChars)
+{
+    const std::string all = JoinParts(parts, parts.size());
+    if (all.size() <= maxChars)
+    {
+        return all;
+    }
+    for (size_t keep = parts.size() - 1; keep >= 1; --keep)
+    {
+        const std::string head   = JoinParts(parts, keep);
+        const std::string suffix = MoreSuffix(parts.size() - keep);
+        if (head.size() + suffix.size() <= maxChars)
+        {
+            return head + suffix;
+        }
+    }
+    const std::string suffix = MoreSuffix(parts.size() - 1);
+    const size_t      room   = maxChars > suffix.size() ? maxChars - suffix.size() : 0;
+    return parts[0].substr(0, room) + suffix;
+}
+
 }   // namespace
 
 // --- settings ---------------------------------------------------------------
@@ -603,44 +704,60 @@ std::string FormatLabel(LabelMode mode, LayerId id, const LayerCandidate &c)
     return text;
 }
 
-LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount])
+std::string MergeTileLabels(const std::vector<std::string> &labels)
 {
-    struct Want
+    // Identical captions collapse to one part with a count, first seen first.
+    std::vector<std::string> parts;
+    std::vector<int>         counts;
+    for (const std::string &l : labels)
     {
-        DesiredDraw *draw;
-        LayerId      id;
-        int          rank;   // position in kLabelOrder: breaks distance ties
-    };
-    std::vector<Want> wants;
-    for (int rank = 0; rank < kLayerCount; ++rank)
-    {
-        const LayerId id = kLabelOrder[rank];
-        for (DesiredDraw &d : sel[Idx(id)].draws)
+        const auto it = std::find(parts.begin(), parts.end(), l);
+        if (it != parts.end())
         {
-            d.label.clear();
-            if (cfg.layers[Idx(id)].labels != LabelMode::None)
-            {
-                wants.push_back(Want{ &d, id, rank });
-            }
+            ++counts[static_cast<size_t>(it - parts.begin())];
+            continue;
+        }
+        parts.push_back(l);
+        counts.push_back(1);
+    }
+    if (parts.empty())
+    {
+        return {};
+    }
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        if (counts[i] > 1)
+        {
+            parts[i] += " x" + std::to_string(counts[i]);
         }
     }
+    return JoinWithin(parts, kMaxTileLabelChars);
+}
+
+LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount])
+{
+    std::vector<TileGroup> groups = GroupWantsByTile(cfg, sel);
     // Nearest first ACROSS layers: the caption budget goes to what is closest
-    // to the player, whichever layer it belongs to.
-    std::stable_sort(wants.begin(), wants.end(), [](const Want &a, const Want &b)
+    // to the player, whichever layer it belongs to. One tile is one caption.
+    std::stable_sort(groups.begin(), groups.end(), [](const TileGroup &a, const TileGroup &b)
     {
-        if (a.draw->candidate.distance != b.draw->candidate.distance)
+        if (a.distance != b.distance)
         {
-            return a.draw->candidate.distance < b.draw->candidate.distance;
+            return a.distance < b.distance;
         }
-        return a.rank < b.rank;
+        return a.wants.front().rank < b.wants.front().rank;
     });
     LabelTally   tally;
     const size_t budget = static_cast<size_t>(Clamp(cfg.labelBudget, 0, kMaxLabelBudget));
-    tally.wanted = static_cast<uint32_t>(wants.size());
-    for (size_t i = 0; i < wants.size() && i < budget; ++i)
+    tally.wanted = static_cast<uint32_t>(groups.size());
+    for (size_t i = 0; i < groups.size() && i < budget; ++i)
     {
-        DesiredDraw &d = *wants[i].draw;
-        d.label = FormatLabel(cfg.layers[Idx(wants[i].id)].labels, wants[i].id, d.candidate);
+        std::vector<std::string> labels;
+        for (const LabelWant &w : groups[i].wants)
+        {
+            labels.push_back(FormatLabel(cfg.layers[Idx(w.id)].labels, w.id, w.draw->candidate));
+        }
+        groups[i].wants.front().draw->label = MergeTileLabels(labels);
         ++tally.given;
     }
     return tally;

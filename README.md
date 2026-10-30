@@ -92,7 +92,10 @@ in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
   `debug_draw_clear_all`: the host and scripts share the overlay.
 - **Labels** each take one of the agent's 64 text slots, shared with every
   connection, so labels are budgeted across all layers (40 by default, nearest
-  first). Boxes need no slot.
+  first). Boxes need no slot. Everything on one tile (a loc at its footprint
+  origin) shares one caption across layers - "Zezima | Goblin x3 | Bank booth",
+  self, player, npc, ground, loc order, cut at 48 chars with "... +N more" -
+  and spends one label of the budget.
 - **Locs** draw their real footprint: the debugger reads `sizeX`/`sizeY` from
   the cache loc definition (swapped for rotation 1 and 3) and sends it as
   `w`/`h`. With the cache closed, locs draw one tile.
@@ -108,7 +111,10 @@ in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
   with the agent's own error, and no retries, until you re-tick it, press
   Retry, or reconnect.
 - **Interfaces** is the existing transparent overlay window that paints the
-  Interfaces panel's selected interface.
+  Interfaces panel's selected interface. It sits just above the game in
+  z-order (never topmost), shows only while the game - or the debugger over a
+  non-minimised game - is in front and there are boxes to paint, and draws no
+  text of its own: the Layers panel says when there is nothing to draw.
 
 Settings persist in `imgui.ini` under `[NXTDebugger][Layers]`.
 

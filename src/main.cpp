@@ -392,9 +392,10 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SwapBuffers(boot.dc);
 
-        // External interface overlay — a separate transparent, click-through,
-        // topmost window with its own GL + ImGui context. Lazily created when
-        // enabled and attached, destroyed when disabled or on a pid change. It
+        // External interface overlay -- a separate transparent, click-through
+        // window just above the game in z-order, with its own GL + ImGui
+        // context. Lazily created when enabled, attached and there are boxes to
+        // paint; destroyed when disabled or on a pid change. It
         // reads app.interfaceView read-only (no pipe, no RPC) and restores the
         // main GL + ImGui current state before returning.
         if (app.overlayEnabled && app.session.IsOpen())
@@ -404,7 +405,8 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
             {
                 nxtdbg::overlay::Destroy(overlay);
             }
-            if (!nxtdbg::overlay::IsCreated(overlay))
+            if (!nxtdbg::overlay::IsCreated(overlay)
+                && nxtdbg::overlay::HasVisibleBoxes(app.interfaceView))
             {
                 if (!nxtdbg::overlay::Create(overlay, inst, app.session.Pid()))
                 {

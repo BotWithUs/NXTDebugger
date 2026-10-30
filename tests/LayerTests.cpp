@@ -250,8 +250,10 @@ void TestLabels()
     Selection sel[ov::kLayerCount];
     for (int i = 0; i < 3; ++i)
     {
+        LayerCandidate tree = Cand(i, i, "Tree");
+        tree.tileY = 3210;   // its own tile: this is the budget, not the merge
         sel[static_cast<int>(LayerId::Loc)].draws.push_back(DesiredDraw{ "l" + std::to_string(i),
-                                                            Cand(i, i, "Tree"), "", 0 });
+                                                            tree, "", 0 });
         sel[static_cast<int>(LayerId::Npc)].draws.push_back(DesiredDraw{ "n" + std::to_string(i),
                                                             Cand(i, i, "Man"), "", 0 });
     }
@@ -270,6 +272,122 @@ void TestLabels()
             sel[static_cast<int>(LayerId::Loc)].draws[2].label.empty(), 1);
     CheckStr("label budget: label text", sel[static_cast<int>(LayerId::Npc)].draws[0].label,
              "Man");
+}
+
+DesiredDraw OnTile(const char *key, int id, int dist, int x, int y, const char *name)
+{
+    LayerCandidate c = Cand(id, dist, name);
+    c.tileX = x;
+    c.tileY = y;
+    return DesiredDraw{ key, c, "", 0 };
+}
+
+std::vector<DesiredDraw> &Draws(Selection (&sel)[ov::kLayerCount], LayerId id)
+{
+    return sel[static_cast<int>(id)].draws;
+}
+
+void TestTileLabelGrouping()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    Selection sel[ov::kLayerCount];
+    // One tile: three goblins, a player, a bank booth. Another tile: one cow.
+    Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n2", 2, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n3", 3, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n4", 4, 3, 3203, 3200, "Cow"));
+    Draws(sel, LayerId::Player).push_back(OnTile("p1", 9, 2, 3202, 3200, "Zezima"));
+    Draws(sel, LayerId::Loc).push_back(OnTile("l1", 501, 2, 3202, 3200, "Bank booth"));
+    const ov::LabelTally tally = ov::ApplyLabels(cfg, sel);
+    CheckEq("tile labels: one caption per tile (given)", tally.given, 2);
+    CheckEq("tile labels: wanted counts tiles", tally.wanted, 2);
+    CheckStr("tile labels: player carries, layer order, merged",
+             Draws(sel, LayerId::Player)[0].label, "Zezima | Goblin x3 | Bank booth");
+    CheckStr("tile labels: goblin keeps box, no label", Draws(sel, LayerId::Npc)[0].label, "");
+    CheckStr("tile labels: loc keeps box, no label", Draws(sel, LayerId::Loc)[0].label, "");
+    CheckStr("tile labels: other tile untouched", Draws(sel, LayerId::Npc)[3].label, "Cow");
+
+    // Another plane is another tile.
+    Selection planes[ov::kLayerCount];
+    Draws(planes, LayerId::Npc).push_back(OnTile("n1", 1, 1, 3201, 3200, "Guard"));
+    Draws(planes, LayerId::Npc).push_back(OnTile("n2", 2, 1, 3201, 3200, "Guard"));
+    Draws(planes, LayerId::Npc)[1].candidate.plane = 1;
+    ov::ApplyLabels(cfg, planes);
+    CheckStr("tile labels: plane 0 guard", Draws(planes, LayerId::Npc)[0].label, "Guard");
+    CheckStr("tile labels: plane 1 guard", Draws(planes, LayerId::Npc)[1].label, "Guard");
+}
+
+void TestTileLabelBudget()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    cfg.labelBudget = 1;
+    Selection sel[ov::kLayerCount];
+    Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 1, 3201, 3200, "Man"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n2", 2, 1, 3201, 3200, "Woman"));
+    Draws(sel, LayerId::Ground).push_back(OnTile("g1", 995, 1, 3201, 3200, "Coins"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n3", 3, 4, 3204, 3200, "Rat"));
+    const ov::LabelTally tally = ov::ApplyLabels(cfg, sel);
+    CheckEq("tile budget: merged tile spends one", tally.given, 1);
+    CheckEq("tile budget: wanted", tally.wanted, 2);
+    CheckStr("tile budget: merged caption", Draws(sel, LayerId::Npc)[0].label,
+             "Man | Woman | Coins");
+    CheckStr("tile budget: far tile refused", Draws(sel, LayerId::Npc)[2].label, "");
+
+    // A layer with labels off contributes nothing to the tile's caption.
+    cfg.labelBudget = 40;
+    cfg.layers[static_cast<int>(LayerId::Ground)].labels = LabelMode::None;
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("tile budget: labels-off layer left out", Draws(sel, LayerId::Npc)[0].label,
+             "Man | Woman");
+}
+
+void TestTileLabelTruncation()
+{
+    CheckStr("merge: identical", ov::MergeTileLabels({ "Goblin", "Goblin", "Goblin" }),
+             "Goblin x3");
+    CheckStr("merge: empty", ov::MergeTileLabels({}), "");
+    // 48-char cap: whole parts drop from the end and are counted.
+    const std::string got = ov::MergeTileLabels(
+        { "Guard", "Banker", "Man", "Woman", "Goblin", "Rat", "Cow", "Chicken", "Imp" });
+    CheckStr("merge: truncated", got, "Guard | Banker | Man | Woman | Goblin... +4 more");
+    CheckEq("merge: within cap", static_cast<long long>(got.size()) <= 48, 1);
+    CheckStr("merge: exactly fits",
+             ov::MergeTileLabels({ "Aaaaaaaaaaaaaaaaaaaaa", "Bbbbbbbbbbbbbbbbbbbbbbbb" }),
+             "Aaaaaaaaaaaaaaaaaaaaa | Bbbbbbbbbbbbbbbbbbbbbbbb");
+    CheckStr("merge: one long name cut",
+             ov::MergeTileLabels({ std::string(60, 'n') }),
+             (std::string(45, 'n') + "...").c_str());
+    CheckStr("merge: long first of two cut",
+             ov::MergeTileLabels({ std::string(60, 'n'), "Rat" }),
+             (std::string(37, 'n') + "... +1 more").c_str());
+}
+
+// A carrier change on a tile is a label change on the same keys: the diff
+// re-sends both as restyles and clears nothing.
+void TestTileLabelCarrierDiff()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    Selection sel[ov::kLayerCount];
+    Draws(sel, LayerId::Npc).push_back(OnTile("dbg:npc:1", 1, 1, 3201, 3200, "Man"));
+    Draws(sel, LayerId::Loc).push_back(OnTile("dbg:loc:5", 5, 1, 3201, 3200, "Tree"));
+    ov::ApplyLabels(cfg, sel);
+    SentMap npcSent;
+    SentMap locSent;
+    const std::vector<size_t> first = { 0 };
+    ov::CommitSends(npcSent, Draws(sel, LayerId::Npc), first, 1000);
+    ov::CommitSends(locSent, Draws(sel, LayerId::Loc), first, 1000);
+
+    // The player walks onto the tile: the player now carries the caption.
+    Draws(sel, LayerId::Player).push_back(OnTile("dbg:player:9", 9, 1, 3201, 3200, "Zezima"));
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("carrier: player takes the caption", Draws(sel, LayerId::Player)[0].label,
+             "Zezima | Man | Tree");
+    const ov::LayerDiff npcDiff = ov::DiffLayer(npcSent, Draws(sel, LayerId::Npc), 1100, 10000);
+    const ov::LayerDiff locDiff = ov::DiffLayer(locSent, Draws(sel, LayerId::Loc), 1100, 10000);
+    CheckEq("carrier: old carrier restyled", static_cast<long long>(npcDiff.toSend.size()), 1);
+    CheckEq("carrier: old carrier not cleared", static_cast<long long>(npcDiff.toClear.size()), 0);
+    CheckEq("carrier: non-carrier unchanged", static_cast<long long>(locDiff.toSend.size()), 0);
+    CheckEq("carrier: non-carrier not cleared", static_cast<long long>(locDiff.toClear.size()), 0);
 }
 
 // --- diff ---------------------------------------------------------------------
@@ -643,6 +761,10 @@ int main()
     TestSelectCapAndOrder();
     TestSelectFilter();
     TestLabels();
+    TestTileLabelGrouping();
+    TestTileLabelBudget();
+    TestTileLabelTruncation();
+    TestTileLabelCarrierDiff();
     TestDiff();
     TestTtl();
     TestSanitize();
