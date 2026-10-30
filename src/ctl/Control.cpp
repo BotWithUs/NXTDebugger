@@ -53,6 +53,9 @@ constexpr CommandEntry kCommands[] = {
     { "gameval", CmdGameval, "gameval {kind, id | name | search, max?}  (kind component: id or iface+comp)" },
     { "cs2",     CmdCs2,     "cs2 {id, decompiled?, dir?}" },
     { "xref",    CmdXref,    "xref {kind: varbit|varp|const, id, dir?}" },
+    { "layers",  CmdLayers,  "layers [get|set|retry] {<layer>: on|off, <layer>.color|labels|max_distance|"
+                             "max_count|filter, refresh_ms, label_budget, iface}  "
+                             "(layers: npc player self loc ground)" },
     { "attach",  CmdAttach,  "attach {pid} | {auto: true}" },
     { "detach",  CmdDetach,  "detach" },
     { "quit",    CmdQuit,    "quit  (closes this debugger instance)" },

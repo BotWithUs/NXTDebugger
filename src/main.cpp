@@ -427,6 +427,9 @@ int APIENTRY wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         }
     }
 
+    // The agent drops a connection's draws when it closes anyway; clearing first
+    // means the boxes vanish now rather than when the pipe handle is reaped.
+    nxtdbg::overlay::ClearAllLayers(app);
     nxtdbg::ctl::StopControl(app);
 
     if (nxtdbg::overlay::IsCreated(overlay))

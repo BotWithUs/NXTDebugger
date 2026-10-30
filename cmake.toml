@@ -336,3 +336,32 @@ compile-options = [
 [[test]]
 name = "wire"
 command = "$<TARGET_FILE:nxt_debugger_wire_tests>"
+
+# --- nxt_debugger_layer_tests (ctest) ---
+# The overlay layers' pure half (overlay/Layers.cpp: selection, keys, diff,
+# batch encoding, reply classification) with the shared draw-param codec and
+# nothing else -- no ImGui, App, cache or pipe.
+[target.nxt_debugger_layer_tests]
+type = "executable"
+sources = [
+    "tests/LayerTests.cpp",
+    "src/overlay/Layers.cpp",
+    "src/rpc/DrawParams.cpp",
+    "wire/rpc/MsgPack.cpp",
+]
+compile-features = ["cxx_std_23"]
+include-directories = [
+    "src",
+    "wire",
+]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
+
+[[test]]
+name = "layers"
+command = "$<TARGET_FILE:nxt_debugger_layer_tests>"

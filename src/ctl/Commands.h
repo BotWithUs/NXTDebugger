@@ -89,6 +89,7 @@ bool CmdWatch  (app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdUnwatch(app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdChanges(app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdEvents (app::App &, const JsonValue &, JsonValue &, std::string &);
+bool CmdLayers (app::App &, const JsonValue &, JsonValue &, std::string &);
 
 // --- per-frame work (Watch.cpp) ---------------------------------------------
 

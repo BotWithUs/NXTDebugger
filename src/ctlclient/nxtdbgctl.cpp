@@ -41,10 +41,12 @@ const char kUsage[] =
     "       nxtdbgctl --list\n"
     "\n"
     "Commands: status tree comp vars watch unwatch changes events rpc cache gameval\n"
-    "          cs2 xref attach detach quit help   (nxtdbgctl help for arguments)\n"
-    "key=value values are parsed as JSON when they parse, else taken as strings:\n"
+    "          cs2 xref layers attach detach quit help   (nxtdbgctl help for arguments)\n"
+    "key=value values are parsed as JSON when they parse, else taken as strings;\n"
+    "one bare word after the command is sent as action=<word>:\n"
     "  nxtdbgctl tree iface=1477\n"
     "  nxtdbgctl vars 'varp=[1,2]' varbit=5000\n"
+    "  nxtdbgctl layers set npc=on loc=off npc.filter=Banker\n"
     "Default pipe: $NXTDBGCTL_PIPE, else \\\\.\\pipe\\nxtdebugger-ctl (first debugger).\n"
     "Exit codes: 0 ok, 1 debugger said ok:false, 2 no debugger / pipe error, 3 usage.\n";
 
@@ -219,6 +221,12 @@ bool AddArgument(Options &o, const std::string &arg)
         return true;
     }
     const size_t eq = arg.find('=');
+    // One bare word is a subcommand: `layers set npc=on` sends action "set".
+    if (eq == std::string::npos && !arg.empty() && o.args.Find("action") == nullptr)
+    {
+        ctl::Put(o.args, "action", ctl::JStr(arg));
+        return true;
+    }
     if (eq == std::string::npos || eq == 0)
     {
         std::fprintf(stderr, "nxtdbgctl: expected key=value or a JSON object, got: %s\n",

@@ -71,6 +71,39 @@ Start the debugger, pick the client process in the **Attach** panel, and the
 session binds once the magic and protocol version verify. The title bar shows
 the attached pid and the negotiated protocol version.
 
+### Layers (in-game overlay)
+
+The **Layers** panel (View > Layers, or Overlay > Layers panel) draws game state
+in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
+(locs), Ground items, and Interfaces.
+
+- **World layers** are entity highlights in the agent's own draw store, so the
+  agent re-projects them in-process every tick and they track the camera
+  exactly. Each layer has a colour, a label mode (none / name / name + id /
+  name + id + distance), a max distance in tiles, a max count (nearest first,
+  "showing N of M" when capped) and a filter (name substring, or an exact id).
+- **Traffic.** While a world layer is on, the debugger refreshes on a timer
+  (600 ms by default) and sends only what changed: at most one
+  `debug_draw_set_batch` and one `debug_draw_clear` per layer per refresh.
+  Draws carry a TTL of five refresh intervals, so a debugger that dies leaves
+  nothing behind for long.
+- **Keys** are `dbg:<layer>:<identity>`. Unticking a layer clears exactly its
+  keys; detach and exit clear all of them. The debugger never calls
+  `debug_draw_clear_all`: the host and scripts share the overlay.
+- **Labels** each take one of the agent's 64 text slots, shared with every
+  connection, so labels are budgeted across all layers (40 by default, nearest
+  first). Boxes need no slot.
+- **Locs** draw their real footprint: the debugger reads `sizeX`/`sizeY` from
+  the cache loc definition (swapped for rotation 1 and 3) and sends it as
+  `w`/`h`. With the cache closed, locs draw one tile.
+- An agent that refuses a layer's entries (one without entity batch entries or
+  loc / ground-item support) gets the layer latched off with the agent's own
+  error, and no retries, until you re-tick it, press Retry, or reconnect.
+- **Interfaces** is the existing transparent overlay window that paints the
+  Interfaces panel's selected interface.
+
+Settings persist in `imgui.ini` under `[NXTDebugger][Layers]`.
+
 ### Command line
 
 ```
@@ -92,7 +125,8 @@ A bad flag exits with code 2 and prints to the parent console, not a message box
 
 `--ctl` exposes everything the debugger sees to an automation client, with no
 GUI involved. It is as read-only as the rest of the debugger: no command queues
-a game action, and `rpc` forwards only an allowlist of query methods.
+a game action, and `rpc` forwards only an allowlist of query methods. The one
+thing it writes is the overlay layers (`layers`), which only draw.
 
 - **Pipes.** `\\.\pipe\nxtdebugger-ctl-<debugger pid>`, plus the alias
   `\\.\pipe\nxtdebugger-ctl`, which the first `--ctl` instance on the box owns.
@@ -147,6 +181,7 @@ when no session is bound. The offline commands (`gameval`, `cache`, `cs2`,
 | `xref` | `kind` (`varbit`\|`varp`\|`const`), `id`, `dir?` | `{status: "building", files_done, files_total}` until the index is ready (the first call starts it), then `{status: "ready", total, scripts[]}`. |
 | `gameval` | `kind`, then `id`, `name` (exact) or `search` (substring); `max?` (200) | an id gives `{id, name}`; a name or search gives `{total, matches[]}`. Kinds: `item obj npc loc if interface component varp varbit varc struct enum param inv seq sprite graphic model dbrow quest`. `component` takes `id` (the hash) or `iface` + `comp`. |
 | `cache` | `type` (`npc item loc seq varbit enum struct inv param quest`), `id` | `{found, gameval, definition}`, decoded by NXTCache. The local cache opens on first use, and `NXTCache.dll` must sit beside the exe or on PATH. |
+| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `label_budget`, `iface` (layers: `npc` `player` `self` `loc` `ground`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`. A request with one bad argument applies none of them. |
 | `attach` | `pid` or `auto: true` | binds the observer session (the Attach panel's button); nothing is sent to the game |
 | `detach` | none | drops the session |
 | `quit` | none | closes this debugger instance after the reply |
@@ -187,6 +222,8 @@ nxtdbgctl xref kind=varbit id=5000
 nxtdbgctl gameval kind=item name=COINS
 nxtdbgctl gameval kind=component iface=1477 comp=0
 nxtdbgctl cache type=item id=995
+nxtdbgctl layers set npc=on loc=off npc.filter=Banker npc.labels=name_id
+nxtdbgctl layers
 nxtdbgctl quit
 ```
 

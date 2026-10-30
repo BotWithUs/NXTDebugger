@@ -5,6 +5,7 @@
 #include "cs2/Cs2Index.h"
 #include "ctl/Control.h"
 #include "gameval/GameVal.h"
+#include "overlay/LayerSync.h"
 #include "rpc/RpcClient.h"
 #include "rpc/TapClient.h"
 #include "wire/EventReader.h"
@@ -86,6 +87,12 @@ struct App
     bool                  overlayEnabled       = false;
     bool                  overlayShowAllLabels = false;
     bool                  overlayFollowFg      = true;   // hide when game unfocused
+
+    // In-game world layers (npcs, players, self, locs, ground items) drawn by
+    // the agent's own overlay. Settings + what was sent; driven from Update()
+    // by overlay/LayerSync, edited by the Layers panel and the ctl `layers`
+    // command.
+    overlay::LayerSyncState layers;
 
     // Programmatic control surface (ctl/): the named-pipe server, watches and
     // change / event logs. Pumped once per frame from Update(), after the RPC
