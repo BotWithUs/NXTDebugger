@@ -130,10 +130,15 @@ constexpr uint32_t kStoreReserve        = 64;
 constexpr uint32_t kDebuggerStoreBudget = kAgentStoreCap - kStoreReserve;
 
 // A merged tile caption is cut to LayerConfig::tileLabelChars (the agent's
-// text slot holds 127).
+// text slot holds 127). With multi-row labels on, the same setting is the
+// width a row wraps at.
 constexpr int      kMinTileLabelChars     = 24;
 constexpr int      kMaxTileLabelChars     = 120;
 constexpr int      kDefaultTileLabelChars = 48;
+// Multi-row labels (rows-contract.md): the agent draws at most 8 '\n'-separated
+// rows, and the whole label, '\n's included, fits one 128-byte text slot.
+constexpr size_t   kMaxLabelRows      = 8;
+constexpr size_t   kMaxLabelTextChars = 127;
 
 constexpr size_t   kFilterChars = 64;
 
@@ -154,7 +159,10 @@ struct LayerConfig
     int           refreshMs      = kDefaultRefreshMs;
     int           fastRefreshMs  = kDefaultFastRefreshMs;   // projectiles, spot anims
     int           labelBudget    = kDefaultLabelBudget;     // labels across every layer
-    int           tileLabelChars = kDefaultTileLabelChars;  // one merged caption's cap
+    int           tileLabelChars = kDefaultTileLabelChars;  // caption cap / row width
+    // One row per distinct thing on a tile, wrapped at field boundaries. Off:
+    // the single-line " | " caption, for an agent that draws '\n' as a glyph.
+    bool          isMultiRowLabels = true;
 };
 
 // "npc", "player", "self", "loc", "ground", "proj", "spot" (also read:
@@ -310,6 +318,10 @@ Selection SelectLayer(LayerId id, const LayerSettings &s,
 // (3204,3200,0) anim 422 lvl 21 -> Zezima". A field with no value this tick
 // (no animation playing) is left out.
 std::string FormatLabel(const LabelFields &fields, LayerId id, const LayerCandidate &c);
+// The same fields one per element ("Guard", "#3000", "4t", ...); empty when
+// none has a value. What multi-row labels wrap between.
+std::vector<std::string> FormatLabelParts(const LabelFields &fields, LayerId id,
+                                          const LayerCandidate &c);
 // True when the layer's settings produce any caption at all.
 bool        WantsLabel(LayerId id, const LayerSettings &s);
 
@@ -341,6 +353,16 @@ struct LabelTally
 std::string MergeTileLabels(const std::vector<std::string> &labels,
                             size_t maxChars = kDefaultTileLabelChars);
 
+// The multi-row form: one entry per thing on the tile (its fields), in caption
+// order. Identical things merge as "Name x3"; each distinct thing starts a row
+// and wraps onto continuation rows at field boundaries when longer than
+// rowChars -- only a single field longer than rowChars is cut, at the width,
+// onto the next row. Rows join with '\n'. When the rows exceed kMaxLabelRows
+// or kMaxLabelTextChars, whole trailing rows are dropped and a last row
+// "+N more" counts the things not fully shown. Nothing ends in "...".
+std::string MergeTileRows(const std::vector<std::vector<std::string>> &things,
+                          size_t rowChars = kDefaultTileLabelChars);
+
 // Labels are grouped by world tile (x, y, plane; a loc at its footprint
 // origin) across every layer, so entities sharing a tile do not stack their
 // captions. Each tile gets one caption, carried by its first draw in layer
@@ -350,7 +372,8 @@ std::string MergeTileLabels(const std::vector<std::string> &labels,
 // layer order). A draw past the budget is still drawn, just without a
 // caption. Keys never change: a carrier moving to another draw is a label
 // change on both, which the diff re-sends as a restyle. Captions are cut to
-// cfg.tileLabelChars. Entity layers only; fast layers' draws are untouched.
+// cfg.tileLabelChars, or with cfg.isMultiRowLabels built by MergeTileRows at
+// that row width. Entity layers only; fast layers' draws are untouched.
 LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount]);
 
 // The same for the fast layers (projectile, then spot anim), merged among

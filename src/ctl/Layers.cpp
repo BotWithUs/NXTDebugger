@@ -18,6 +18,7 @@
 //   nxtdbgctl layers set npc.anim=on npc.hp=on npc.animating_only=on npc.labels=name,id
 //   nxtdbgctl layers set proj=on proj.target=on spot=on fast_refresh_ms=150
 //   nxtdbgctl layers set refresh_ms=1200 label_budget=20 label_chars=80 iface=on
+//   nxtdbgctl layers set label_rows=off           -> single-line labels (old agent)
 //   nxtdbgctl layers retry                        -> re-arm layers the agent refused
 //
 // `labels=` takes a comma list of label fields (name, id, dist, coords, anim,
@@ -182,7 +183,7 @@ int *GlobalNumber(overlay::LayerConfig &c, const std::string &key)
     return key == "label_chars" ? &c.tileLabelChars : nullptr;
 }
 
-// refresh_ms / fast_refresh_ms / label_budget / label_chars / iface /
+// refresh_ms / fast_refresh_ms / label_budget / label_chars / label_rows / iface /
 // iface_all_labels. False when `key` is not a global.
 bool SetGlobal(LayerEdit &e, const std::string &key, const JsonValue &v, std::string &outError)
 {
@@ -198,6 +199,7 @@ bool SetGlobal(LayerEdit &e, const std::string &key, const JsonValue &v, std::st
         return true;
     }
     bool *target = (key == "iface" || key == "interfaces") ? &e.isIfaceOn
+                 : (key == "label_rows")                   ? &e.config.isMultiRowLabels
                  : (key == "iface_all_labels")             ? &e.isIfaceAllLabels
                                                            : nullptr;
     if (target == nullptr)
@@ -260,6 +262,7 @@ void Describe(const app::App &a, JsonValue &out)
     Put(out, "fast_refresh_ms", JInt(a.layers.config.fastRefreshMs));
     Put(out, "fast_ttl_ms", JInt(overlay::FastDrawTtlMs(a.layers.config.fastRefreshMs)));
     Put(out, "label_chars", JInt(a.layers.config.tileLabelChars));
+    Put(out, "label_rows", JBool(a.layers.config.isMultiRowLabels));
     JsonValue iface = JObj();
     Put(iface, "enabled", JBool(a.overlayEnabled));
     Put(iface, "all_labels", JBool(a.overlayShowAllLabels));

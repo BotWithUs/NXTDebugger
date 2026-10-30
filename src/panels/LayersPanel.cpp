@@ -109,6 +109,7 @@ void IniReadLine(ImGuiContext *, ImGuiSettingsHandler *, void *entry, const char
     if (key == "fast_refresh_ms")        { a.layers.config.fastRefreshMs = std::atoi(value); return; }
     if (key == "label_budget")           { a.layers.config.labelBudget = std::atoi(value); return; }
     if (key == "label_chars")            { a.layers.config.tileLabelChars = std::atoi(value); return; }
+    if (key == "label_rows")             { a.layers.config.isMultiRowLabels = std::atoi(value) != 0; return; }
     if (key == "interfaces")             { a.overlayEnabled = std::atoi(value) != 0; return; }
     if (key == "interfaces_all_labels")  { a.overlayShowAllLabels = std::atoi(value) != 0; return; }
     const size_t dot = key.find('.');
@@ -132,6 +133,7 @@ void IniWriteAll(ImGuiContext *, ImGuiSettingsHandler *h, ImGuiTextBuffer *out)
     out->appendf("fast_refresh_ms=%d\n", a.layers.config.fastRefreshMs);
     out->appendf("label_budget=%d\n", a.layers.config.labelBudget);
     out->appendf("label_chars=%d\n", a.layers.config.tileLabelChars);
+    out->appendf("label_rows=%d\n", a.layers.config.isMultiRowLabels ? 1 : 0);
     out->appendf("interfaces=%d\n", a.overlayEnabled ? 1 : 0);
     out->appendf("interfaces_all_labels=%d\n", a.overlayShowAllLabels ? 1 : 0);
     for (int i = 0; i < overlay::kLayerCount; ++i)
@@ -431,8 +433,17 @@ void DrawLabelControls(app::App &a, LayerConfig &cfg)
     std::snprintf(buf, sizeof(buf), "labels %u of %u", given, wanted);
     ImGui::SameLine();
     theme::Pill(buf, Soft(tone), tone);
+    if (ImGui::Checkbox("multi-row labels", &cfg.isMultiRowLabels))
+    {
+        Changed(a);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled(cfg.isMultiRowLabels ? "one row per thing, wrapped"
+                                             : "one line (agents without row support)");
     ImGui::SetNextItemWidth(w);
-    if (ImGui::SliderInt("label length (chars)", &cfg.tileLabelChars,
+    const char *lengthLabel = cfg.isMultiRowLabels ? "row width (chars)###labelChars"
+                                                 : "label length (chars)###labelChars";
+    if (ImGui::SliderInt(lengthLabel, &cfg.tileLabelChars,
                          overlay::kMinTileLabelChars, overlay::kMaxTileLabelChars))
     {
         Changed(a);

@@ -13,6 +13,7 @@
 #include "ipc/SharedLayout.h"
 #include "rpc/MsgPack.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -305,9 +306,17 @@ std::vector<DesiredDraw> &Draws(Selection (&sel)[ov::kLayerCount], LayerId id)
     return sel[static_cast<int>(id)].draws;
 }
 
-void TestTileLabelGrouping()
+// Multi-row labels off: the single-line " | " caption these tests pin down.
+ov::LayerConfig SingleLineConfig()
 {
     ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    cfg.isMultiRowLabels = false;
+    return cfg;
+}
+
+void TestTileLabelGrouping()
+{
+    ov::LayerConfig cfg = SingleLineConfig();
     Selection sel[ov::kLayerCount];
     // One tile: three goblins, a player, a bank booth. Another tile: one cow.
     Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 2, 3202, 3200, "Goblin"));
@@ -337,7 +346,7 @@ void TestTileLabelGrouping()
 
 void TestTileLabelBudget()
 {
-    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    ov::LayerConfig cfg = SingleLineConfig();
     cfg.labelBudget = 1;
     Selection sel[ov::kLayerCount];
     Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 1, 3201, 3200, "Man"));
@@ -384,7 +393,7 @@ void TestTileLabelTruncation()
 // re-sends both as restyles and clears nothing.
 void TestTileLabelCarrierDiff()
 {
-    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    ov::LayerConfig cfg = SingleLineConfig();
     Selection sel[ov::kLayerCount];
     Draws(sel, LayerId::Npc).push_back(OnTile("dbg:npc:1", 1, 1, 3201, 3200, "Man"));
     Draws(sel, LayerId::Loc).push_back(OnTile("dbg:loc:5", 5, 1, 3201, 3200, "Tree"));
@@ -406,6 +415,93 @@ void TestTileLabelCarrierDiff()
     CheckEq("carrier: old carrier not cleared", static_cast<long long>(npcDiff.toClear.size()), 0);
     CheckEq("carrier: non-carrier unchanged", static_cast<long long>(locDiff.toSend.size()), 0);
     CheckEq("carrier: non-carrier not cleared", static_cast<long long>(locDiff.toClear.size()), 0);
+}
+
+// --- multi-row labels -----------------------------------------------------------
+
+// Default on: one row per distinct thing, layer order then nearest, one slot.
+void TestMultiRowTile()
+{
+    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    CheckEq("rows: on by default", cfg.isMultiRowLabels, 1);
+    cfg.labelBudget = 1;
+    Selection sel[ov::kLayerCount];
+    Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n2", 2, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Npc).push_back(OnTile("n3", 3, 2, 3202, 3200, "Goblin"));
+    Draws(sel, LayerId::Player).push_back(OnTile("p1", 9, 2, 3202, 3200, "Zezima"));
+    Draws(sel, LayerId::Loc).push_back(OnTile("l1", 501, 2, 3202, 3200, "Bank booth"));
+    const ov::LabelTally tally = ov::ApplyLabels(cfg, sel);
+    CheckEq("rows: one tile spends one text slot", tally.given, 1);
+    CheckStr("rows: one row per thing", Draws(sel, LayerId::Player)[0].label,
+             "Zezima\nGoblin x3\nBank booth");
+    CheckStr("rows: non-carrier unlabelled", Draws(sel, LayerId::Npc)[0].label, "");
+
+    // Every enabled field shows; the row wraps at the configured width.
+    cfg.tileLabelChars = 24;
+    cfg.layers[static_cast<int>(LayerId::Player)].labels = Fields("name,id,dist,coords");
+    ov::ApplyLabels(cfg, sel);
+    CheckStr("rows: fields wrap at width", Draws(sel, LayerId::Player)[0].label,
+             "Zezima #9 2t\n(3202,3200,0)\nGoblin x3\nBank booth");
+}
+
+void TestRowWrap()
+{
+    CheckStr("wrap: at field boundaries",
+             ov::MergeTileRows({ { "Guard", "#3000", "4t", "(3204,3200,0)", "anim 422" } }, 24),
+             "Guard #3000 4t\n(3204,3200,0) anim 422");
+    CheckStr("wrap: identical things merge",
+             ov::MergeTileRows({ { "Goblin", "#1" }, { "Goblin", "#1" }, { "Goblin", "#2" } }),
+             "Goblin #1 x2\nGoblin #2");
+    CheckStr("wrap: field longer than width cut at width",
+             ov::MergeTileRows({ { "Gu", std::string(30, 'n'), "x" } }, 24),
+             ("Gu\n" + std::string(24, 'n') + "\nnnnnnn x").c_str());
+    CheckStr("wrap: empty things skipped", ov::MergeTileRows({ {}, { "Rat" }, {} }), "Rat");
+    CheckStr("wrap: nothing", ov::MergeTileRows({ {}, {} }), "");
+    CheckStr("wrap: no ellipsis on a long row",
+             ov::MergeTileRows({ { std::string(40, 'a'), std::string(40, 'b') } }, 48),
+             (std::string(40, 'a') + "\n" + std::string(40, 'b')).c_str());
+}
+
+std::vector<std::vector<std::string>> NamedThings(int count, size_t nameChars)
+{
+    std::vector<std::vector<std::string>> things;
+    for (int i = 0; i < count; ++i)
+    {
+        std::string name = "Npc" + std::to_string(i);
+        name.resize(std::max(name.size(), nameChars), 'n');
+        things.push_back({ name });
+    }
+    return things;
+}
+
+void TestRowLimits()
+{
+    CheckStr("limits: eight rows exactly fit", ov::MergeTileRows(NamedThings(8, 4)),
+             "Npc0\nNpc1\nNpc2\nNpc3\nNpc4\nNpc5\nNpc6\nNpc7");
+    CheckStr("limits: ten things keep seven + more", ov::MergeTileRows(NamedThings(10, 4)),
+             "Npc0\nNpc1\nNpc2\nNpc3\nNpc4\nNpc5\nNpc6\n+3 more");
+    // Four 40-char rows are 163 chars: two rows and the "+2 more" row fit 127.
+    const std::string wide = ov::MergeTileRows(NamedThings(4, 40));
+    CheckStr("limits: 127 chars drops whole rows", wide,
+             ("Npc0" + std::string(36, 'n') + "\nNpc1" + std::string(36, 'n') + "\n+2 more")
+                 .c_str());
+    CheckEq("limits: within the text slot", wide.size() <= ov::kMaxLabelTextChars, 1);
+    // One thing wrapping onto ten rows: both limits apply and it counts as one.
+    std::vector<std::string> fields;
+    for (int i = 0; i < 10; ++i)
+    {
+        fields.push_back("field" + std::to_string(i) + std::string(14, 'f'));
+    }
+    std::string want;
+    for (int i = 0; i < 5; ++i)
+    {
+        want += fields[static_cast<size_t>(i)] + "\n";
+    }
+    want += "+1 more";
+    const std::string tall = ov::MergeTileRows({ fields }, 24);
+    CheckStr("limits: one tall thing keeps whole fields", tall, want.c_str());
+    CheckEq("limits: tall within the text slot", tall.size() <= ov::kMaxLabelTextChars, 1);
 }
 
 // --- diff ---------------------------------------------------------------------
@@ -899,7 +995,7 @@ void TestTileLabelChars()
     CheckStr("merge: 24-char cap",
              ov::MergeTileLabels({ "Guard", "Banker", "Man", "Woman", "Goblin" }, 24),
              "Guard... +4 more");
-    ov::LayerConfig cfg = ov::DefaultLayerConfig();
+    ov::LayerConfig cfg = SingleLineConfig();
     cfg.tileLabelChars = 120;
     Selection sel[ov::kLayerCount];
     for (int i = 0; i < 8; ++i)
@@ -1187,6 +1283,9 @@ int main()
     TestTileLabelBudget();
     TestTileLabelTruncation();
     TestTileLabelCarrierDiff();
+    TestMultiRowTile();
+    TestRowWrap();
+    TestRowLimits();
     TestDiff();
     TestTtl();
     TestSanitize();

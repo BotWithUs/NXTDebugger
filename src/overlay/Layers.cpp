@@ -92,9 +92,13 @@ struct LayerOrder
     int            count;
 };
 
-// The agent draws a caption as one line (no '\n', no offset), so the names
-// sharing a tile join on that line.
+// Single-line labels (multi-row off): the names sharing a tile join on one
+// line, for an agent that draws '\n' as a glyph.
 constexpr const char *kLabelJoin = " | ";
+// Multi-row labels: room kept beside one full row for a "\n+NNNN more" row, so
+// overflow always keeps at least the first row.
+constexpr size_t      kMoreRowReserve = 11;
+constexpr size_t      kMaxRowChars    = kMaxLabelTextChars - kMoreRowReserve;
 
 int Idx(LayerId id)
 {
@@ -648,6 +652,143 @@ std::string JoinWithin(const std::vector<std::string> &parts, size_t maxChars)
     return parts[0].substr(0, room) + suffix;
 }
 
+// The rows of a multi-row label and, per row, the index of the thing it shows.
+struct LabelRows
+{
+    std::vector<std::string> text;
+    std::vector<size_t>      owner;
+};
+
+void PushRow(LabelRows &io, std::string row, size_t owner)
+{
+    io.text.push_back(std::move(row));
+    io.owner.push_back(owner);
+}
+
+// One thing's fields as rows of at most rowChars: fields join with ' ' while
+// they fit; only a field longer than rowChars on its own is cut at the width.
+void WrapFields(const std::vector<std::string> &fields, size_t rowChars, size_t owner,
+                LabelRows &io)
+{
+    std::string row;
+    for (const std::string &f : fields)
+    {
+        if (!row.empty() && row.size() + 1 + f.size() <= rowChars)
+        {
+            row += ' ';
+            row += f;
+            continue;
+        }
+        if (!row.empty())
+        {
+            PushRow(io, std::move(row), owner);
+        }
+        size_t at = 0;
+        while (f.size() - at > rowChars)
+        {
+            PushRow(io, f.substr(at, rowChars), owner);
+            at += rowChars;
+        }
+        row = f.substr(at);
+    }
+    if (!row.empty())
+    {
+        PushRow(io, std::move(row), owner);
+    }
+}
+
+// The first `count` rows joined with '\n'.
+std::string JoinRows(const std::vector<std::string> &rows, size_t count)
+{
+    std::string out;
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (i > 0)
+        {
+            out += '\n';
+        }
+        out += rows[i];
+    }
+    return out;
+}
+
+// Every row when they fit the agent's row and text-slot limits; else the
+// longest run of leading rows that fits with a last "+N more" row, N the
+// things whose rows are not all shown.
+std::string FitRows(const LabelRows &rows, size_t thingCount)
+{
+    const std::string all = JoinRows(rows.text, rows.text.size());
+    if (rows.text.size() <= kMaxLabelRows && all.size() <= kMaxLabelTextChars)
+    {
+        return all;
+    }
+    for (size_t keep = std::min(rows.text.size() - 1, kMaxLabelRows - 1); keep >= 1; --keep)
+    {
+        const std::string head = JoinRows(rows.text, keep);
+        const std::string more = "+" + std::to_string(thingCount - rows.owner[keep]) + " more";
+        if (head.size() + 1 + more.size() <= kMaxLabelTextChars)
+        {
+            return head + '\n' + more;
+        }
+    }
+    return "+" + std::to_string(thingCount) + " more";   // unreachable: kMoreRowReserve
+}
+
+// Identical field lists collapse to one with a count on its last field
+// ("Guard x3"), first seen first; things with no fields are skipped.
+std::vector<std::vector<std::string>> MergeThings(
+    const std::vector<std::vector<std::string>> &things)
+{
+    std::vector<std::vector<std::string>> distinct;
+    std::vector<int>                      counts;
+    for (const std::vector<std::string> &t : things)
+    {
+        if (t.empty())
+        {
+            continue;
+        }
+        const auto it = std::find(distinct.begin(), distinct.end(), t);
+        if (it != distinct.end())
+        {
+            ++counts[static_cast<size_t>(it - distinct.begin())];
+            continue;
+        }
+        distinct.push_back(t);
+        counts.push_back(1);
+    }
+    for (size_t i = 0; i < distinct.size(); ++i)
+    {
+        if (counts[i] > 1)
+        {
+            distinct[i].back() += " x" + std::to_string(counts[i]);
+        }
+    }
+    return distinct;
+}
+
+// One tile's caption: multi-row from each draw's fields, or the single line.
+std::string TileCaption(const LayerConfig &cfg, const TileGroup &g)
+{
+    const size_t width = static_cast<size_t>(
+        Clamp(cfg.tileLabelChars, kMinTileLabelChars, kMaxTileLabelChars));
+    if (cfg.isMultiRowLabels)
+    {
+        std::vector<std::vector<std::string>> things;
+        for (const LabelWant &w : g.wants)
+        {
+            things.push_back(
+                FormatLabelParts(cfg.layers[Idx(w.id)].labels, w.id, w.draw->candidate));
+        }
+        return MergeTileRows(things, width);
+    }
+    std::vector<std::string> labels;
+    for (const LabelWant &w : g.wants)
+    {
+        labels.push_back(FormatLabel(cfg.layers[Idx(w.id)].labels, w.id, w.draw->candidate));
+    }
+    return MergeTileLabels(labels, width);
+}
+
 // Nearest first ACROSS layers: the caption budget goes to what is closest to
 // the player, whichever layer it belongs to. One tile is one caption.
 LabelTally ApplyLabelsIn(const LayerConfig &cfg, Selection (&sel)[kLayerCount],
@@ -663,17 +804,10 @@ LabelTally ApplyLabelsIn(const LayerConfig &cfg, Selection (&sel)[kLayerCount],
         return a.wants.front().rank < b.wants.front().rank;
     });
     LabelTally   tally;
-    const size_t cap      = static_cast<size_t>(Clamp(budget, 0, kMaxLabelBudget));
-    const size_t maxChars = static_cast<size_t>(
-        Clamp(cfg.tileLabelChars, kMinTileLabelChars, kMaxTileLabelChars));
+    const size_t cap = static_cast<size_t>(Clamp(budget, 0, kMaxLabelBudget));
     for (TileGroup &g : groups)
     {
-        std::vector<std::string> labels;
-        for (const LabelWant &w : g.wants)
-        {
-            labels.push_back(FormatLabel(cfg.layers[Idx(w.id)].labels, w.id, w.draw->candidate));
-        }
-        std::string caption = MergeTileLabels(labels, maxChars);
+        std::string caption = TileCaption(cfg, g);
         if (caption.empty())
         {
             continue;   // e.g. "anim" only and nothing on the tile animating
@@ -1202,12 +1336,13 @@ bool WantsLabel(LayerId id, const LayerSettings &s)
     return false;
 }
 
-std::string FormatLabel(const LabelFields &fields, LayerId id, const LayerCandidate &c)
+std::vector<std::string> FormatLabelParts(const LabelFields &fields, LayerId id,
+                                          const LayerCandidate &c)
 {
     std::vector<std::string> parts;
     if (fields.showName)
     {
-        parts.push_back(NamePart(id, c));
+        AddPart(parts, NamePart(id, c));
     }
     if (fields.showId)
     {
@@ -1222,8 +1357,13 @@ std::string FormatLabel(const LabelFields &fields, LayerId id, const LayerCandid
         parts.push_back(FormatCoords(c));
     }
     AddActorParts(fields, id, c, parts);
+    return parts;
+}
+
+std::string FormatLabel(const LabelFields &fields, LayerId id, const LayerCandidate &c)
+{
     std::string text;
-    for (const std::string &p : parts)
+    for (const std::string &p : FormatLabelParts(fields, id, c))
     {
         text += text.empty() ? p : " " + p;
     }
@@ -1305,6 +1445,18 @@ std::string MergeTileLabels(const std::vector<std::string> &labels, size_t maxCh
         }
     }
     return JoinWithin(parts, maxChars);
+}
+
+std::string MergeTileRows(const std::vector<std::vector<std::string>> &things, size_t rowChars)
+{
+    const std::vector<std::vector<std::string>> distinct = MergeThings(things);
+    const size_t width = std::clamp(rowChars, size_t{ 1 }, kMaxRowChars);
+    LabelRows    rows;
+    for (size_t i = 0; i < distinct.size(); ++i)
+    {
+        WrapFields(distinct[i], width, i, rows);
+    }
+    return rows.text.empty() ? std::string() : FitRows(rows, distinct.size());
 }
 
 LabelTally ApplyLabels(const LayerConfig &cfg, Selection (&sel)[kLayerCount])
