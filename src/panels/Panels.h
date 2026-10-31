@@ -22,5 +22,10 @@ void DrawVarWatcher       (app::App &);
 void DrawSessionHealth    (app::App &);
 void DrawDebugDraw        (app::App &);
 void DrawLogPanel         (app::App &);
+void DrawLayersPanel      (app::App &);
+
+// Registers the [NXTDebugger][Layers] imgui.ini section. Call before the
+// first frame (the ini loads on the first NewFrame).
+void RegisterLayerSettings(app::App &);
 
 }

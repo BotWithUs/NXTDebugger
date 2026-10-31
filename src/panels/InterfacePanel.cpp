@@ -5,6 +5,7 @@
 #include "app/Theme.h"
 #include "rpc/MsgPack.h"
 #include "rpc/RpcClient.h"
+#include "wire/CategoryName.h"
 #include "wire/OpenIface.h"
 #include "wire/SnapshotReader.h"
 
@@ -81,31 +82,6 @@ const char *IfaceName(app::App &a, int32_t id)
 {
     if (const char *gv = a.gameval.NameForCacheType("if", id)) return gv;
     return LookupIfaceName(id);
-}
-
-const char *CategoryName(int32_t cat)
-{
-    using nxt::ipc::WireCategory;
-    switch (static_cast<WireCategory>(cat))
-    {
-    case WireCategory::Unknown:  return "Unknown";
-    case WireCategory::Layer:    return "Layer";
-    case WireCategory::Box:      return "Box";
-    case WireCategory::Text:     return "Text";
-    case WireCategory::Sprite:   return "Sprite";
-    case WireCategory::Model:    return "Model";
-    case WireCategory::Button:   return "Button";
-    case WireCategory::Divider:  return "Divider";
-    case WireCategory::List:     return "List";
-    case WireCategory::Input:    return "Input";
-    case WireCategory::Combo:    return "Combo";
-    case WireCategory::Media:    return "Media";
-    case WireCategory::Tooltip:  return "Tooltip";
-    case WireCategory::CrmView:  return "CrmView";
-    case WireCategory::Table:    return "Table";
-    case WireCategory::Cutscene: return "Cutscene";
-    }
-    return "?";
 }
 
 // ---------------------------------------------------------------------------
@@ -844,7 +820,7 @@ void BuildNodeLabel(app::App &a, const Comp &c, int32_t kids, char *out, size_t 
         std::snprintf(fanout, sizeof(fanout), "  (%d)", kids);
     }
     std::snprintf(out, cap, "%s%s  [%s]%s  %s",
-                  ident, name, CategoryName(c.category), fanout, summary);
+                  ident, name, wire::CategoryName(c.category), fanout, summary);
 }
 
 bool IsNodeSelected(const PanelState &s, const Comp &c)
@@ -1017,7 +993,7 @@ void DrawSelectedIdentity(app::App &a, const Comp &c)
         theme::KeyLine("gameval", cn);
     }
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%d (%s)", c.type, CategoryName(c.category));
+    std::snprintf(buf, sizeof(buf), "%d (%s)", c.type, wire::CategoryName(c.category));
     theme::KeyLine("type", buf);
 }
 
@@ -1160,12 +1136,12 @@ void PublishOverlayView(app::App &a, PanelState &s)
         if (c.sub >= 0)
         {
             std::snprintf(b.label, sizeof(b.label), "%d\xC2\xB7%d %s",
-                          c.comp, c.sub, CategoryName(c.category));
+                          c.comp, c.sub, wire::CategoryName(c.category));
         }
         else
         {
             std::snprintf(b.label, sizeof(b.label), "%d %s",
-                          c.comp, CategoryName(c.category));
+                          c.comp, wire::CategoryName(c.category));
         }
         v.boxes.push_back(b);
     }

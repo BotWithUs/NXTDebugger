@@ -16,7 +16,7 @@ struct Cursor
     const char *end;
 };
 
-bool ParseValue(Cursor &c, JsonValue &out);
+bool ParseValue(Cursor &c, JsonValue &out, uint32_t depth);
 
 void SkipWs(Cursor &c)
 {
@@ -218,8 +218,15 @@ bool ParseNumber(Cursor &c, JsonValue &out)
     return true;
 }
 
-bool ParseArray(Cursor &c, JsonValue &out)
+// depth counts the containers already open around this one. Refusing past
+// kMaxJsonNesting bounds the recursion: the control pipe feeds this parser
+// untrusted lines, and ~10 KB of '[' was enough to overflow the stack.
+bool ParseArray(Cursor &c, JsonValue &out, uint32_t depth)
 {
+    if (depth >= kMaxJsonNesting)
+    {
+        return false;
+    }
     out.type = JsonType::Array;
     ++c.p;   // '['
     SkipWs(c);
@@ -231,7 +238,7 @@ bool ParseArray(Cursor &c, JsonValue &out)
     while (c.p < c.end)
     {
         JsonValue v;
-        if (!ParseValue(c, v))
+        if (!ParseValue(c, v, depth + 1))
         {
             return false;
         }
@@ -256,8 +263,12 @@ bool ParseArray(Cursor &c, JsonValue &out)
     return false;
 }
 
-bool ParseObject(Cursor &c, JsonValue &out)
+bool ParseObject(Cursor &c, JsonValue &out, uint32_t depth)
 {
+    if (depth >= kMaxJsonNesting)
+    {
+        return false;
+    }
     out.type = JsonType::Object;
     ++c.p;   // '{'
     SkipWs(c);
@@ -285,7 +296,7 @@ bool ParseObject(Cursor &c, JsonValue &out)
         }
         ++c.p;
         JsonValue v;
-        if (!ParseValue(c, v))
+        if (!ParseValue(c, v, depth + 1))
         {
             return false;
         }
@@ -310,7 +321,7 @@ bool ParseObject(Cursor &c, JsonValue &out)
     return false;
 }
 
-bool ParseValue(Cursor &c, JsonValue &out)
+bool ParseValue(Cursor &c, JsonValue &out, uint32_t depth)
 {
     SkipWs(c);
     if (c.p >= c.end)
@@ -320,9 +331,9 @@ bool ParseValue(Cursor &c, JsonValue &out)
     switch (*c.p)
     {
     case '{':
-        return ParseObject(c, out);
+        return ParseObject(c, out, depth);
     case '[':
-        return ParseArray(c, out);
+        return ParseArray(c, out, depth);
     case '"':
         out.type = JsonType::String;
         return ParseStringRaw(c, out.strVal);
@@ -430,7 +441,7 @@ bool ParseJson(std::string_view text, JsonValue &outValue)
 {
     outValue = JsonValue{};
     Cursor c{ text.data(), text.data() + text.size() };
-    if (!ParseValue(c, outValue))
+    if (!ParseValue(c, outValue, 0))
     {
         outValue = JsonValue{};
         return false;

@@ -50,8 +50,15 @@ struct JsonValue
     std::string AsString() const;   // scalars stringified; containers -> empty
 };
 
+// Most arrays/objects that may be open at once. Real NXTCache JSON peaks at 8
+// (a whole-type dump with its envelope; one entry is shallower) and a control
+// pipe reply adds a few, so 64 is headroom, not a limit anything legitimate
+// meets. Same figure as the wire codec's msgpack::kMaxNesting.
+inline constexpr uint32_t kMaxJsonNesting = 64;
+
 // Parse a UTF-8 JSON document. Returns false (and leaves outValue = Null) on
-// malformed input or trailing non-whitespace.
+// malformed input, nesting deeper than kMaxJsonNesting, or trailing
+// non-whitespace.
 bool ParseJson(std::string_view text, JsonValue &outValue);
 
 }

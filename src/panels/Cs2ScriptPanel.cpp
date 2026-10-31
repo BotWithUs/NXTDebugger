@@ -79,28 +79,12 @@ void SplitLines(const std::string &text, std::vector<std::string> &out)
     }
 }
 
-// Build "<corpus>\<id:06d>.asm", or the sibling decompiled "<...>\cs2_decompiled\
-// <id:06d>.cs2" when source==1 (the decompiled tree sits next to cs2_asm).
-std::wstring ScriptPath(const std::wstring &asmDir, int id, int source)
-{
-    wchar_t name[32];
-    if (source == 1)
-    {
-        std::swprintf(name, 32, L"%06d.cs2", id);
-        size_t slash = asmDir.find_last_of(L"\\/");
-        std::wstring parent = (slash == std::wstring::npos) ? asmDir : asmDir.substr(0, slash);
-        return parent + L"\\cs2_decompiled\\" + name;
-    }
-    std::swprintf(name, 32, L"%06d.asm", id);
-    return asmDir + L"\\" + name;
-}
-
 void LoadScript(app::App &a, ScriptState &s, int id)
 {
     s.scriptId = id;
     s.idInput  = id;
     s.loadError[0] = 0;
-    std::wstring path = ScriptPath(a.cs2.Dir(), id, s.source);
+    std::wstring path = a.cs2.ScriptFile(id, s.source == 1);
     std::string text;
     if (ReadWholeFile(path, text))
     {

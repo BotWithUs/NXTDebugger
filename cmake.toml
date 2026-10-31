@@ -42,7 +42,10 @@ set(WIRE_FILES
     ipc/WireCategory.h
     rpc/MsgPack.h
     rpc/MsgPack.cpp)
-set(NXTLIB_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src)
+# Overridable: point it elsewhere (or at a non-existent path to skip the check)
+# when the sibling checkout is on a different protocol than the agent you run.
+set(NXTLIB_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../NXTLibrary/src CACHE PATH
+    "Producer (NXTLibrary) src/ checked for wire/ drift")
 
 if(EXISTS ${NXTLIB_SRC}/ipc/SharedLayout.h)
     set(_wire_drift "")
@@ -185,6 +188,7 @@ sources = [
     "src/cache/*.cpp",
     "src/gameval/*.cpp",
     "src/cs2/*.cpp",
+    "src/ctl/*.cpp",
     "src/render/*.cpp",
     "src/log/*.cpp",
     "src/rpc/*.cpp",
@@ -199,6 +203,7 @@ headers = [
     "src/cache/*.h",
     "src/gameval/*.h",
     "src/cs2/*.h",
+    "src/ctl/*.h",
     "src/render/*.h",
     "src/log/*.h",
     "src/rpc/*.h",
@@ -276,16 +281,47 @@ add_custom_command(TARGET nxt_debugger POST_BUILD
     COMMENT "Copying resources/ next to nxt_debugger.exe")
 """
 
+# --- nxtdbgctl.exe ---
+# Console client for the debugger's control pipe (src/ctl/, README "Control
+# pipe"). Deliberately tiny: it links only the JSON parser and writer, never the
+# debugger, the wire headers or the RPC codec -- it speaks line-delimited JSON
+# to the debugger and nothing else.
+[target.nxtdbgctl]
+type = "executable"
+sources = [
+    "src/ctlclient/*.cpp",
+    "src/cache/Json.cpp",
+    "src/ctl/JsonOut.cpp",
+]
+headers = [
+    "src/cache/Json.h",
+    "src/ctl/JsonOut.h",
+]
+compile-features = ["cxx_std_23"]
+include-directories = ["src"]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+    "UNICODE",
+    "_UNICODE",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
+
 # --- nxt_debugger_wire_tests (ctest) ---
 # The wire decode with nothing else linked: no ImGui, no Session, no window.
 # It compiles src/wire/OpenIface.cpp -- the same file the Interfaces panel
 # calls -- against the same wire/ headers, plus ProtocolDocPins.h, so a layout
-# that drifts fails here as well as in the app. Run: ctest --test-dir build -C Release
+# that drifts fails here as well as in the app. It also carries the JSON parser
+# (src/cache/Json.cpp), whose depth cap is what stands between a hostile control
+# pipe line and the stack. Run: ctest --test-dir build -C Release
 [target.nxt_debugger_wire_tests]
 type = "executable"
 sources = [
     "tests/WireTests.cpp",
     "src/wire/OpenIface.cpp",
+    "src/cache/Json.cpp",
 ]
 compile-features = ["cxx_std_23"]
 include-directories = [
@@ -303,3 +339,32 @@ compile-options = [
 [[test]]
 name = "wire"
 command = "$<TARGET_FILE:nxt_debugger_wire_tests>"
+
+# --- nxt_debugger_layer_tests (ctest) ---
+# The overlay layers' pure half (overlay/Layers.cpp: selection, keys, diff,
+# batch encoding, reply classification) with the shared draw-param codec and
+# nothing else -- no ImGui, App, cache or pipe.
+[target.nxt_debugger_layer_tests]
+type = "executable"
+sources = [
+    "tests/LayerTests.cpp",
+    "src/overlay/Layers.cpp",
+    "src/rpc/DrawParams.cpp",
+    "wire/rpc/MsgPack.cpp",
+]
+compile-features = ["cxx_std_23"]
+include-directories = [
+    "src",
+    "wire",
+]
+compile-definitions = [
+    "WIN32_LEAN_AND_MEAN",
+    "NOMINMAX",
+]
+compile-options = [
+    "/W4", "/WX", "/utf-8", "/permissive-", "/Zc:preprocessor",
+]
+
+[[test]]
+name = "layers"
+command = "$<TARGET_FILE:nxt_debugger_layer_tests>"

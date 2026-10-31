@@ -2,6 +2,7 @@
 #include "ItemIcon.h"
 
 #include "app/App.h"
+#include "app/EntityName.h"
 #include "app/Theme.h"
 #include "render/Texture.h"
 #include "wire/SnapshotReader.h"
@@ -36,40 +37,6 @@ void DrawFilter(FilterBuf &fb)
     ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
     ImGui::InputTextWithHint("##filter", "filter (substring)", fb.text, sizeof(fb.text));
     ImGui::PopItemWidth();
-}
-
-std::string CacheName(app::App &a, const char *type, int id)
-{
-    if (id < 0) return {};
-    std::string name;
-    if (a.cache.IsOpen())
-    {
-        std::string json = a.cache.GetJson(type, id);
-        const char *p = json.empty() ? nullptr : std::strstr(json.c_str(), "\"name\"");
-        if (p && (p = std::strchr(p, ':')) != nullptr)
-        {
-            ++p;
-            while (*p == ' ' || *p == '\t') ++p;
-            if (*p == '"')
-            {
-                ++p;
-                if (const char *q = std::strchr(p, '"'))
-                {
-                    name.assign(p, size_t(q - p));
-                }
-            }
-        }
-    }
-    if (name.empty())
-    {
-        // Fallback: the cache has no display name (locs especially, and any
-        // entity when the cache isn't open) — use the bundled gameval name.
-        if (const char *gv = a.gameval.NameForCacheType(type, id))
-        {
-            name = gv;
-        }
-    }
-    return name;
 }
 
 void TableHeader(const char *cols[], int n)
@@ -143,7 +110,7 @@ void NpcsTab(app::App &a, const nxt::ipc::Snapshot &s)
         ImGui::TableSetColumnIndex(1); ImGui::Text("%d", n.typeId);
         ImGui::TableSetColumnIndex(2);
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-        ImGui::TextUnformatted(CacheName(a, "npc", n.typeId).c_str());
+        ImGui::TextUnformatted(app::EntityName(a, "npc", n.typeId).c_str());
         ImGui::PopStyleColor();
         ImGui::TableSetColumnIndex(3);
         ImGui::Text("%d, %d  p%d", n.tileX, n.tileY, int(n.plane));
@@ -245,7 +212,7 @@ void DrawLocRow(app::App &a, const nxt::ipc::LocationEntry &l)
     // empty name, which is the whole reason v20 publishes the resolved id.
     ImGui::TableSetColumnIndex(2);
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-    ImGui::TextUnformatted(CacheName(a, "loc", l.resolvedId).c_str());
+    ImGui::TextUnformatted(app::EntityName(a, "loc", l.resolvedId).c_str());
     ImGui::PopStyleColor();
 
     ImGui::TableSetColumnIndex(3); ImGui::Text("%d, %d  p%d", l.tileX, l.tileY, int(l.plane));
@@ -400,7 +367,7 @@ void DrawGroundRow(app::App &a, GroundState &gs, const GroundRow &g)
     ImGui::PopStyleColor();
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextDim));
-    ImGui::TextUnformatted(CacheName(a, "item", g.itemId).c_str());
+    ImGui::TextUnformatted(app::EntityName(a, "item", g.itemId).c_str());
     ImGui::PopStyleColor();
 
     ImGui::TableSetColumnIndex(2);
