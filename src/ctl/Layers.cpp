@@ -18,7 +18,7 @@
 //   nxtdbgctl layers set npc.anim=on npc.hp=on npc.animating_only=on npc.labels=name,id
 //   nxtdbgctl layers set proj=on proj.target=on spot=on fast_refresh_ms=150
 //   nxtdbgctl layers set refresh_ms=1200 label_budget=20 label_chars=80 iface=on
-//   nxtdbgctl layers set label_rows=off           -> single-line labels (old agent)
+//   nxtdbgctl layers set label_rows=on            -> multi-row labels (agent with row support)
 //   nxtdbgctl layers retry                        -> re-arm layers the agent refused
 //
 // `labels=` takes a comma list of label fields (name, id, dist, coords, anim,

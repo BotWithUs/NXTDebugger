@@ -116,6 +116,10 @@ in the game itself, one toggle per layer: NPCs, Players, Self, Scene objects
   24..120) with "... +N more" - and spends one label of the budget.
   Projectiles and spot anims merge among themselves and get what the other
   layers leave of the budget.
+- **Multi-row labels** (off by default) put one row per thing on the tile
+  instead, wrapped at field boundaries at the row width. They need an agent
+  that draws `\n` as a line break (nxt-library #46); an older agent draws it
+  as a glyph. Toggle with the panel checkbox or `label_rows=on|off`.
 - **Locs** draw their real footprint: the debugger reads `sizeX`/`sizeY` from
   the cache loc definition (swapped for rotation 1 and 3) and sends it as
   `w`/`h`. With the cache closed, locs draw one tile.
@@ -215,7 +219,7 @@ when no session is bound. The offline commands (`gameval`, `cache`, `cs2`,
 | `xref` | `kind` (`varbit`\|`varp`\|`const`), `id`, `dir?` | `{status: "building", files_done, files_total}` until the index is ready (the first call starts it), then `{status: "ready", total, scripts[]}`. |
 | `gameval` | `kind`, then `id`, `name` (exact) or `search` (substring); `max?` (200) | an id gives `{id, name}`; a name or search gives `{total, matches[]}`. Kinds: `item obj npc loc if interface component varp varbit varc struct enum param inv seq sprite graphic model dbrow quest`. `component` takes `id` (the hash) or `iface` + `comp`. |
 | `cache` | `type` (`npc item loc seq varbit enum struct inv param quest`), `id` | `{found, gameval, definition}`, decoded by NXTCache. The local cache opens on first use, and `NXTCache.dll` must sit beside the exe or on PATH. |
-| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` (comma list or a legacy token) / `.<field>=on\|off` (`name` `id` `dist` `coords` `anim` `spot` `hp` `combat` `target`) / `.animating_only` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `fast_refresh_ms`, `label_budget`, `label_chars`, `iface` (layers: `npc` `player` `self` `loc` `ground` `proj` `spot`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`, `fast_labels_shown` / `fast_labels_wanted`, `spot_anims_held`, `rpcs_last_refresh` / `rpcs_last_fast_refresh`, `agent_mode` (`unknown` \| `batch` \| `per_entity`). A request with one bad argument applies none of them. |
+| `layers` | optional action `get` \| `set` \| `retry`; `<layer>=on\|off` and `<layer>.color` / `.labels` (comma list or a legacy token) / `.<field>=on\|off` (`name` `id` `dist` `coords` `anim` `spot` `hp` `combat` `target`) / `.animating_only` / `.max_distance` / `.max_count` / `.filter`, plus `refresh_ms`, `fast_refresh_ms`, `label_budget`, `label_chars`, `label_rows`, `iface` (layers: `npc` `player` `self` `loc` `ground` `proj` `spot`) | every layer's settings and state (`shown`, `matched`, `sent`, `rejected`, `message`), `labels_shown` / `labels_wanted`, `fast_labels_shown` / `fast_labels_wanted`, `spot_anims_held`, `rpcs_last_refresh` / `rpcs_last_fast_refresh`, `agent_mode` (`unknown` \| `batch` \| `per_entity`). A request with one bad argument applies none of them. |
 | `attach` | `pid` or `auto: true` | binds the observer session (the Attach panel's button); nothing is sent to the game |
 | `detach` | none | drops the session |
 | `quit` | none | closes this debugger instance after the reply |

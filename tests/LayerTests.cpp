@@ -419,11 +419,13 @@ void TestTileLabelCarrierDiff()
 
 // --- multi-row labels -----------------------------------------------------------
 
-// Default on: one row per distinct thing, layer order then nearest, one slot.
+// Off by default (rows need agent support); on: one row per distinct thing,
+// layer order then nearest, one slot.
 void TestMultiRowTile()
 {
     ov::LayerConfig cfg = ov::DefaultLayerConfig();
-    CheckEq("rows: on by default", cfg.isMultiRowLabels, 1);
+    CheckEq("rows: off by default", cfg.isMultiRowLabels, 0);
+    cfg.isMultiRowLabels = true;
     cfg.labelBudget = 1;
     Selection sel[ov::kLayerCount];
     Draws(sel, LayerId::Npc).push_back(OnTile("n1", 1, 2, 3202, 3200, "Goblin"));

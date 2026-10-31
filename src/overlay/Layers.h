@@ -161,8 +161,9 @@ struct LayerConfig
     int           labelBudget    = kDefaultLabelBudget;     // labels across every layer
     int           tileLabelChars = kDefaultTileLabelChars;  // caption cap / row width
     // One row per distinct thing on a tile, wrapped at field boundaries. Off:
-    // the single-line " | " caption, for an agent that draws '\n' as a glyph.
-    bool          isMultiRowLabels = true;
+    // the single-line " | " caption. Off by default because rows need agent
+    // support (nxt-library #46); an agent without it draws '\n' as a glyph.
+    bool          isMultiRowLabels = false;
 };
 
 // "npc", "player", "self", "loc", "ground", "proj", "spot" (also read:
