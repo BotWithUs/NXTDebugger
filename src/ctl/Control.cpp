@@ -55,7 +55,7 @@ constexpr CommandEntry kCommands[] = {
     { "xref",    CmdXref,    "xref {kind: varbit|varp|const, id, dir?}" },
     { "layers",  CmdLayers,  "layers [get|set|retry] {<layer>: on|off, <layer>.color|labels|max_distance|"
                              "max_count|filter, refresh_ms, label_budget, iface}  "
-                             "(layers: npc player self loc ground)" },
+                             "(layers: npc player self loc ground proj spot)" },
     { "attach",  CmdAttach,  "attach {pid} | {auto: true}" },
     { "detach",  CmdDetach,  "detach" },
     { "quit",    CmdQuit,    "quit  (closes this debugger instance)" },
