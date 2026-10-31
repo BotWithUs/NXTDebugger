@@ -313,12 +313,15 @@ compile-options = [
 # The wire decode with nothing else linked: no ImGui, no Session, no window.
 # It compiles src/wire/OpenIface.cpp -- the same file the Interfaces panel
 # calls -- against the same wire/ headers, plus ProtocolDocPins.h, so a layout
-# that drifts fails here as well as in the app. Run: ctest --test-dir build -C Release
+# that drifts fails here as well as in the app. It also carries the JSON parser
+# (src/cache/Json.cpp), whose depth cap is what stands between a hostile control
+# pipe line and the stack. Run: ctest --test-dir build -C Release
 [target.nxt_debugger_wire_tests]
 type = "executable"
 sources = [
     "tests/WireTests.cpp",
     "src/wire/OpenIface.cpp",
+    "src/cache/Json.cpp",
 ]
 compile-features = ["cxx_std_23"]
 include-directories = [

@@ -1,10 +1,12 @@
-// Wire tests: the open-interface decode (wire v23 openIfaceFlags) and the
-// absolute layout figures it moved.
+// Wire tests: the open-interface decode (wire v23 openIfaceFlags), the
+// absolute layout figures it moved, and the JSON parser's nesting cap (the
+// control pipe hands that parser untrusted lines).
 //
 // No framework on purpose -- this target links nothing but the wire decode
-// module, so it builds on any clone. Each CHECK prints what it compared; the
+// module and the JSON parser, so it builds on any clone. Each CHECK prints what it compared; the
 // exit code is the number of failures, which is what ctest reads.
 
+#include "cache/Json.h"
 #include "wire/OpenIface.h"
 
 // The same compile-time pins the debugger builds with: a layout that drifts
@@ -18,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
 
 namespace
 {
@@ -168,6 +171,47 @@ void TestCountClamp()
     CheckEq("null snapshot is empty", none.count, 0);
 }
 
+// '[' x depth, then ']' x depth -- or the object form, {"a":{"a":...0...}}.
+std::string Nested(int depth, bool isObject)
+{
+    std::string s;
+    for (int i = 0; i < depth; ++i)
+    {
+        s += isObject ? "{\"a\":" : "[";
+    }
+    s += "0";
+    for (int i = 0; i < depth; ++i)
+    {
+        s += isObject ? "}" : "]";
+    }
+    return s;
+}
+
+long long Parses(const std::string &text)
+{
+    nxtdbg::cache::JsonValue v;
+    return nxtdbg::cache::ParseJson(text, v) ? 1 : 0;
+}
+
+// Without the cap the 5000-deep lines (~10 KB) overflow the stack and the
+// process dies here; the boundary pair fails rather than crashes.
+void TestJsonDepthCap()
+{
+    const int cap = static_cast<int>(nxtdbg::cache::kMaxJsonNesting);
+    CheckEq("json: cap is 64", cap, 64);
+    CheckEq("json: array at cap parses", Parses(Nested(cap, false)), 1);
+    CheckEq("json: object at cap parses", Parses(Nested(cap, true)), 1);
+    CheckEq("json: array past cap refused", Parses(Nested(cap + 1, false)), 0);
+    CheckEq("json: object past cap refused", Parses(Nested(cap + 1, true)), 0);
+    CheckEq("json: 5000-deep array refused", Parses(Nested(5000, false)), 0);
+    CheckEq("json: 5000-deep object refused", Parses(Nested(5000, true)), 0);
+
+    // A refused parse leaves the documented Null, not a half-built tree.
+    nxtdbg::cache::JsonValue v;
+    nxtdbg::cache::ParseJson(Nested(5000, false), v);
+    CheckEq("json: refused parse leaves Null", v.IsNull() ? 1 : 0, 1);
+}
+
 }
 
 int main()
@@ -177,6 +221,7 @@ int main()
     TestReservedBitsIsolated();
     TestReadFixture();
     TestCountClamp();
+    TestJsonDepthCap();
     std::printf("%d failure(s)\n", failures);
     return failures;
 }
