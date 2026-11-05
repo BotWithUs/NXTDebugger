@@ -2,6 +2,7 @@
 // the session-level commands (status, attach, detach, quit, help).
 #include "ctl/Control.h"
 #include "ctl/Commands.h"
+#include "ctl/SelfJson.h"
 
 #include "app/App.h"
 #include "attach/ProcessList.h"
@@ -21,7 +22,6 @@ namespace
 
 constexpr ULONGLONG kAttachRetryMs = 3000;
 constexpr ULONGLONG kQuitDelayMs   = 250;   // lets the `quit` reply reach the client
-constexpr int32_t   kGameStateInGame = 30;
 
 bool CmdStatus(app::App &, const JsonValue &, JsonValue &, std::string &);
 bool CmdAttach(app::App &, const JsonValue &, JsonValue &, std::string &);
@@ -196,25 +196,7 @@ void PutSnapshot(app::App &a, JsonValue &out)
     Put(out, "publish_seq", JInt(static_cast<int64_t>(snap->publishSeq)));
     const int32_t root = snap->rootIfaceId;
     Put(out, "root_iface", JInt(root));
-    if (gameState == kGameStateInGame)
-    {
-        const nxt::ipc::LocalPlayer &p = snap->self;
-        JsonValue player = JObj();
-        Put(player, "server_index", JInt(p.serverIndex));
-        Put(player, "tile_x", JInt(p.tileX));
-        Put(player, "tile_y", JInt(p.tileY));
-        Put(player, "plane", JInt(p.plane));
-        Put(player, "combat_level", JInt(p.combatLevel));
-        Put(player, "animation", JInt(p.animationId));
-        Put(player, "orientation", JInt(p.orientation));
-        Put(player, "target_index", JInt(p.targetIndex));
-        Put(player, "flags", JInt(p.flags));
-        Put(out, "player", std::move(player));
-    }
-    else
-    {
-        Put(out, "player", JNull());
-    }
+    Put(out, "player", StatusPlayerJson(*snap));
     const uint32_t count = std::min<uint32_t>(snap->openIfaceCount, 64);
     JsonValue      open  = JArr();
     for (uint32_t i = 0; i < count; ++i)
@@ -226,33 +208,6 @@ void PutSnapshot(app::App &a, JsonValue &out)
         Push(open, std::move(e));
     }
     Put(out, "open_ifaces", std::move(open));
-}
-
-JsonValue SceneSelf(const nxt::ipc::LocalPlayer &p)
-{
-    constexpr int32_t kConstitution = 3;
-    constexpr int32_t kPrayer       = 5;
-    JsonValue self = JObj();
-    Put(self, "x", JInt(p.tileX));
-    Put(self, "y", JInt(p.tileY));
-    Put(self, "plane", JInt(p.plane));
-    Put(self, "anim", JInt(p.animationId));
-    Put(self, "spot_anim", JInt(p.spotAnimId));
-    Put(self, "target", JInt(p.targetIndex));
-    const uint32_t skills = std::min<uint32_t>(p.skillCount, nxt::ipc::kSkillCap);
-    for (uint32_t i = 0; i < skills; ++i)
-    {
-        const nxt::ipc::SkillEntry &k = p.skills[i];
-        if (k.typeId == kConstitution)
-        {
-            Put(self, "constitution", JInt(k.boostedLevel));
-        }
-        else if (k.typeId == kPrayer)
-        {
-            Put(self, "prayer", JInt(k.boostedLevel));
-        }
-    }
-    return self;
 }
 
 JsonValue SceneNpcs(app::App &a, const nxt::ipc::Snapshot &s)
@@ -312,12 +267,13 @@ bool CmdScene(app::App &a, const JsonValue &, JsonValue &out, std::string &err)
     }
     Put(out, "server_tick", JInt(snap->serverTick));
     Put(out, "game_cycle", JInt(snap->gameCycle));
-    if (snap->gameState != kGameStateInGame)
+    JsonValue self = SceneSelfJson(*snap);
+    const bool hasSelf = !self.IsNull();
+    Put(out, "self", std::move(self));
+    if (!hasSelf)
     {
-        Put(out, "self", JNull());
         return true;
     }
-    Put(out, "self", SceneSelf(snap->self));
     Put(out, "npcs", SceneNpcs(a, *snap));
     Put(out, "projectiles", SceneProjectiles(*snap));
     return true;

@@ -52,6 +52,7 @@ Requirements: Windows 10/11 x64, Visual Studio 2022 (v143 toolset),
 CMake 3.25+, PowerShell.
 
 ```powershell
+cmake -P cmkr.cmake
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
@@ -63,7 +64,8 @@ other third-party dependencies.
 The build is warning-clean under `/W4 /WX`.
 
 [cmkr](https://github.com/build-cpp/cmkr) generates `CMakeLists.txt` from
-`cmake.toml` — edit `cmake.toml`, never `CMakeLists.txt`.
+`cmake.toml` — edit `cmake.toml`, never `CMakeLists.txt`. The file is gitignored, so
+a fresh checkout needs the `cmake -P cmkr.cmake` line above to create it.
 
 ## Usage
 
@@ -206,7 +208,7 @@ when no session is bound. The offline commands (`gameval`, `cache`, `cs2`,
 
 | command | arguments | returns |
 |---|---|---|
-| `status` | none | `attached`, `pid`, `protocol_version` (the agent's) and `debugger_protocol`, `attach_pending` / `attach_status` / `attach_error`. When attached it adds `game_state`, `server_tick`, `game_cycle`, `publish_seq`, `root_iface`, `player` (`tile_x`, `tile_y`, `plane`, `animation`, ...; `null` unless game state is 30) and `open_ifaces` (`[{id, name}]`). Also `rpc` connection state, `logs` heads and drops, `cache_open`, and the `ctl` pipe names. |
+| `status` | none | `attached`, `pid`, `protocol_version` (the agent's) and `debugger_protocol`, `attach_pending` / `attach_status` / `attach_error`. When attached it adds `game_state`, `server_tick`, `game_cycle`, `publish_seq`, `root_iface`, `player` (`tile_x`, `tile_y`, `plane`, `animation`, ...; `null` unless the frame has a local player: game state 30 and own index >= 0) and `open_ifaces` (`[{id, name}]`). Also `rpc` connection state, `logs` heads and drops, `cache_open`, and the `ctl` pipe names. |
 | `tree` | `iface`, `comp?` (root, default 0) | `get_interface_tree`, decoded: `nodes[]` with `index`, `hash` (`iface<<16 \| comp`), every field the agent sends (`iface comp sub type category x y w h raw_* *_mode abs_screen_pos text hidden sprite_id item_id item_amount triggers parent`), plus `category_name`, `gameval` and `item_name` (the last only when the cache is open). |
 | `comp` | `iface`, `comp`, `sub?` | one component, same shape. With `sub` it is picked from the tree, because `get_component` cannot address a dynamic child. |
 | `vars` | any of `varp`, `varbit`, `varc`, `varcstr` (an int or a list) | `{id, value, found, name}` rows per kind. Varbits are decoded from the backing varp with the cache definition (`source: "varp"`), else they fall back to the last ring event (`"event"`), else `null` (`"none"`). The agent has no varbit read. |

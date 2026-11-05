@@ -5,6 +5,7 @@
 #include "app/EntityName.h"
 #include "app/Theme.h"
 #include "render/Texture.h"
+#include "wire/LocalPlayer.h"
 #include "wire/SnapshotReader.h"
 
 #include "imgui.h"
@@ -291,7 +292,7 @@ int Chebyshev(int ax, int ay, int bx, int by)
 void CollectGroundRows(GroundState &gs, const nxt::ipc::Snapshot &s,
                        std::vector<GroundRow> &out)
 {
-    const bool haveSelf = s.self.serverIndex >= 0;
+    const bool haveSelf = wire::HasLocalPlayer(s);
     char buf[64];
     for (uint32_t i = 0; i < s.groundItemCount; ++i)
     {

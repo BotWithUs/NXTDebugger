@@ -154,6 +154,21 @@ void TestCollectNpcs()
     s->gameState = 10;
     ov::CollectCandidates(LayerId::Npc, *s, 20, kLookup, out);
     CheckEq("not in-world: nothing", static_cast<long long>(out.size()), 0);
+
+    // State 30 before the player resolves. An older agent leaves self.serverIndex at 0 here,
+    // so only ownIndex can say there is no player.
+    s->gameState        = 30;
+    s->ownIndex         = -1;
+    s->self.serverIndex = -1;
+    ov::CollectCandidates(LayerId::Npc, *s, 20, kLookup, out);
+    CheckEq("state 30, no player: nothing", static_cast<long long>(out.size()), 0);
+    s->self.serverIndex = 0;
+    ov::CollectCandidates(LayerId::Npc, *s, 20, kLookup, out);
+    CheckEq("state 30, no player, older agent: nothing", static_cast<long long>(out.size()), 0);
+
+    s->ownIndex = 0;
+    ov::CollectCandidates(LayerId::Npc, *s, 20, kLookup, out);
+    CheckEq("in world at index 0: a player", static_cast<long long>(out.size()), 1);
 }
 
 void TestCollectLocs()
