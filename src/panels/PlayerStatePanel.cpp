@@ -99,6 +99,14 @@ void DrawLocationCard(const nxt::ipc::LocalPlayer &self)
     ImGui::Spacing();
     char idx[24];
     std::snprintf(idx, sizeof(idx), "%d", self.serverIndex);
+    // v25: leads the visual tile during a walk; -1 in all three means unreadable.
+    char serverTile[64] = "unknown";
+    if (self.serverTileX >= 0 && self.serverTileY >= 0 && self.serverPlane >= 0)
+    {
+        std::snprintf(serverTile, sizeof(serverTile), "%d, %d  p%d", self.serverTileX,
+                      self.serverTileY, int(self.serverPlane));
+    }
+    theme::KeyLine("server tile", serverTile);
     theme::KeyLine("server index", idx);
     theme::KeyLine("moving", (self.flags & nxt::ipc::kFlagMoving) ? "yes" : "no");
     theme::KeyLine("members", self.isMember ? "yes" : "no");

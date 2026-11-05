@@ -51,39 +51,46 @@ void CheckStr(const char *what, const char *got, const char *want)
     }
 }
 
-// Runtime echo of the v24 figures, so the test log names the numbers the
+// Runtime echo of the v25 figures, so the test log names the numbers the
 // brief and PROTOCOL.md quote. The static_asserts in ProtocolDocPins.h are the
 // gate; these make the result readable.
 void TestLayoutPins()
 {
     using nxt::ipc::Snapshot;
-    CheckEq("kProtocolVersion", nxt::ipc::kProtocolVersion, 24);
-    CheckEq("sizeof(Snapshot)", sizeof(Snapshot), 452800);
-    CheckEq("offsetof(openIfaces)", offsetof(Snapshot, openIfaces), 361352);
-    CheckEq("offsetof(openIfaceFlags)", offsetof(Snapshot, openIfaceFlags), 362376);
+    CheckEq("kProtocolVersion", nxt::ipc::kProtocolVersion, 25);
+    CheckEq("sizeof(Snapshot)", sizeof(Snapshot), 469192);
+    CheckEq("offsetof(openIfaces)", offsetof(Snapshot, openIfaces), 377744);
+    CheckEq("offsetof(openIfaceFlags)", offsetof(Snapshot, openIfaceFlags), 378768);
     CheckEq("sizeof(openIfaceFlags)", sizeof(Snapshot::openIfaceFlags), nxt::ipc::kOpenIfaceCap);
-    CheckEq("offsetof(_padAfterOpenIfaces)", offsetof(Snapshot, _padAfterOpenIfaces), 362632);
-    CheckEq("offsetof(groundItemCount)", offsetof(Snapshot, groundItemCount), 362636);
-    CheckEq("offsetof(projectileCount)", offsetof(Snapshot, projectileCount), 379024);
-    CheckEq("offsetof(gameCycle)", offsetof(Snapshot, gameCycle), 387220);
-    CheckEq("offsetof(dynRegion)", offsetof(Snapshot, dynRegion), 387224);
-    CheckEq("offsetof(dynChunks)", offsetof(Snapshot, dynChunks), 387264);
-    CheckEq("kSnapshotOff1", nxt::ipc::kSnapshotOff1, 452864);
-    CheckEq("kRingOff", nxt::ipc::kRingOff, 905664);
-    CheckEq("kRegionSize", nxt::ipc::kRegionSize, 1036800);
+    CheckEq("offsetof(_padAfterOpenIfaces)", offsetof(Snapshot, _padAfterOpenIfaces), 379024);
+    CheckEq("offsetof(groundItemCount)", offsetof(Snapshot, groundItemCount), 379028);
+    CheckEq("offsetof(projectileCount)", offsetof(Snapshot, projectileCount), 395416);
+    CheckEq("offsetof(gameCycle)", offsetof(Snapshot, gameCycle), 403612);
+    CheckEq("offsetof(dynRegion)", offsetof(Snapshot, dynRegion), 403616);
+    CheckEq("offsetof(dynChunks)", offsetof(Snapshot, dynChunks), 403656);
+    CheckEq("kSnapshotOff1", nxt::ipc::kSnapshotOff1, 469312);
+    CheckEq("kRingOff", nxt::ipc::kRingOff, 938560);
+    CheckEq("kRegionSize", nxt::ipc::kRegionSize, 1069696);
     CheckEq("kOpenIfaceTypeMask", nxt::ipc::kOpenIfaceTypeMask, 0x07);
     CheckEq("kOpenIfaceFlagClientOpened", nxt::ipc::kOpenIfaceFlagClientOpened, 0x08);
     // v24 entity rows.
-    CheckEq("offsetof(players)", offsetof(Snapshot, players), 49744);
-    CheckEq("sizeof(PlayerEntry)", sizeof(nxt::ipc::PlayerEntry), 48);
+    CheckEq("offsetof(players)", offsetof(Snapshot, players), 49752);
+    CheckEq("sizeof(PlayerEntry)", sizeof(nxt::ipc::PlayerEntry), 56);
     CheckEq("offsetof(PlayerEntry, name)", offsetof(nxt::ipc::PlayerEntry, name), 32);
     CheckEq("kFlagNameTruncated", nxt::ipc::kFlagNameTruncated, 0x02);
     CheckEq("sizeof(NpcEntry)", sizeof(nxt::ipc::NpcEntry), 48);
     CheckEq("offsetof(NpcEntry, activeTypeId)", offsetof(nxt::ipc::NpcEntry, activeTypeId), 40);
     CheckEq("offsetof(NpcEntry, combatLevel)", offsetof(nxt::ipc::NpcEntry, combatLevel), 44);
-    CheckEq("sizeof(LocalPlayer)", sizeof(nxt::ipc::LocalPlayer), 560);
+    CheckEq("sizeof(LocalPlayer)", sizeof(nxt::ipc::LocalPlayer), 568);
     CheckEq("offsetof(LocalPlayer, runEnergy)", offsetof(nxt::ipc::LocalPlayer, runEnergy), 552);
     CheckEq("offsetof(LocalPlayer, runWeight)", offsetof(nxt::ipc::LocalPlayer, runWeight), 556);
+    // v25 server tile.
+    CheckEq("offsetof(PlayerEntry, serverTileX)", offsetof(nxt::ipc::PlayerEntry, serverTileX), 48);
+    CheckEq("offsetof(PlayerEntry, serverTileY)", offsetof(nxt::ipc::PlayerEntry, serverTileY), 50);
+    CheckEq("offsetof(PlayerEntry, serverPlane)", offsetof(nxt::ipc::PlayerEntry, serverPlane), 52);
+    CheckEq("offsetof(LocalPlayer, serverTileX)", offsetof(nxt::ipc::LocalPlayer, serverTileX), 560);
+    CheckEq("offsetof(LocalPlayer, serverTileY)", offsetof(nxt::ipc::LocalPlayer, serverTileY), 562);
+    CheckEq("offsetof(LocalPlayer, serverPlane)", offsetof(nxt::ipc::LocalPlayer, serverPlane), 564);
 }
 
 void CheckFlags(const char *name, uint8_t raw, int wantType, bool wantCs2, bool wantModal,
