@@ -425,6 +425,9 @@ std::string JsonValue::AsString() const
     case JsonType::Int:
         std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(intVal));
         return buf;
+    case JsonType::UInt:
+        std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(uintVal));
+        return buf;
     case JsonType::Double:
         std::snprintf(buf, sizeof(buf), "%g", dblVal);
         return buf;

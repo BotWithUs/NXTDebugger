@@ -321,6 +321,9 @@ compile-options = [
 type = "executable"
 sources = [
     "tests/WireTests.cpp",
+    "wire/rpc/MsgPack.cpp",
+    "src/rpc/DrawParams.cpp",
+    "src/ctl/MsgPackJson.cpp",
     "src/wire/OpenIface.cpp",
     "src/cache/Json.cpp",
     "src/ctl/JsonOut.cpp",

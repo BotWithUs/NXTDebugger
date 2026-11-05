@@ -123,11 +123,17 @@ bool DecodeValue(mp::Reader &r, JsonValue &out, uint32_t depth)
         case mp::Type::Int:
         {
             int64_t v = 0;
-            if (!r.ReadInt(v))
+            if (r.ReadInt(v))
+            {
+                out = JInt(v);
+                return true;
+            }
+            uint64_t u = 0;
+            if (!r.ReadUInt(u))
             {
                 return false;
             }
-            out = JInt(v);
+            out = JUInt(u);
             return true;
         }
         case mp::Type::Float:
@@ -174,6 +180,9 @@ void EncodeValue(mp::Writer &w, const JsonValue &v)
             return;
         case JsonType::Int:
             w.WriteInt(v.intVal);
+            return;
+        case JsonType::UInt:
+            w.WriteUInt(v.uintVal);
             return;
         case JsonType::Double:
             w.WriteDouble(v.dblVal);

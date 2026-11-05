@@ -1,5 +1,7 @@
 #include "DrawParams.h"
 
+#include "IntText.h"
+
 #include <cstdio>
 
 namespace nxtdbg::rpc
@@ -169,12 +171,7 @@ std::string ValueToText(Reader &r)
         return v ? "true" : "false";
     }
     case Type::Int:
-    {
-        int64_t v = 0;
-        r.ReadInt(v);
-        std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
-        return buf;
-    }
+        return ReadIntText(r);
     case Type::Str:
     {
         std::string s;

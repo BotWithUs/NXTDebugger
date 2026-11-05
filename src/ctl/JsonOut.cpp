@@ -132,6 +132,18 @@ JsonValue JInt(int64_t v)
     return j;
 }
 
+JsonValue JUInt(uint64_t v)
+{
+    if (v <= static_cast<uint64_t>(INT64_MAX))
+    {
+        return JInt(static_cast<int64_t>(v));
+    }
+    JsonValue j;
+    j.type    = JsonType::UInt;
+    j.uintVal = v;
+    return j;
+}
+
 JsonValue JDouble(double v)
 {
     JsonValue j;
@@ -195,6 +207,9 @@ void WriteJson(const JsonValue &v, std::string &out)
             return;
         case JsonType::Int:
             out.append(std::to_string(v.intVal));
+            return;
+        case JsonType::UInt:
+            out.append(std::to_string(v.uintVal));
             return;
         case JsonType::Double:
             AppendDouble(out, v.dblVal);

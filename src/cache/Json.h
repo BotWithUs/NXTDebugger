@@ -13,6 +13,7 @@ enum class JsonType
     Null,
     Bool,
     Int,
+    UInt,    // only ever a value above INT64_MAX; see ctl's JUInt
     Double,
     String,
     Array,
@@ -28,6 +29,7 @@ struct JsonValue
     JsonType    type    = JsonType::Null;
     bool        boolVal = false;
     int64_t     intVal  = 0;
+    uint64_t    uintVal = 0;
     double      dblVal  = 0.0;
     std::string strVal;
     std::vector<JsonValue> arrVal;

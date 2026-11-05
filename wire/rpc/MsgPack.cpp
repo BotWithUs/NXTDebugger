@@ -48,6 +48,8 @@ constexpr uint8_t kArray32  = 0xDD;
 constexpr uint8_t kMap16    = 0xDE;
 constexpr uint8_t kMap32    = 0xDF;
 
+constexpr uint64_t kInt64Max = 0x7FFFFFFFFFFFFFFFull;
+
 }
 
 // =========================================================================
@@ -133,8 +135,7 @@ bool Reader::ReadInt(int64_t& v) noexcept {
     case kUInt64: {
         if (!Need(8)) { --m_pos; return false; }
         uint64_t u = R64();
-        // We narrow uint64 -> int64 unconditionally; the RPC surface never
-        // sends values that overflow int64 (Java IDs / sizes are int).
+        if (u > kInt64Max) { m_pos -= 9; return false; }
         v = static_cast<int64_t>(u);
         return true;
     }
@@ -154,6 +155,37 @@ bool Reader::ReadInt(int64_t& v) noexcept {
         --m_pos;
         return false;
     }
+}
+
+bool Reader::ReadUInt(uint64_t& v) noexcept
+{
+    if (!Need(1))
+    {
+        return false;
+    }
+    if (m_data[m_pos] == kUInt64)
+    {
+        if (!Need(9))
+        {
+            return false;
+        }
+        ++m_pos;
+        v = R64();
+        return true;
+    }
+    const size_t start       = m_pos;
+    int64_t      signedValue = 0;
+    if (!ReadInt(signedValue))
+    {
+        return false;
+    }
+    if (signedValue < 0)
+    {
+        m_pos = start;
+        return false;
+    }
+    v = static_cast<uint64_t>(signedValue);
+    return true;
 }
 
 bool Reader::ReadDouble(double& v) noexcept {
@@ -293,7 +325,7 @@ bool Reader::SkipScalar(Type t) noexcept
     {
     case Type::Nil:   return ReadNil();
     case Type::Bool:  { bool b; return ReadBool(b); }
-    case Type::Int:   { int64_t v; return ReadInt(v); }
+    case Type::Int:   { int64_t v; uint64_t u; return ReadInt(v) || ReadUInt(u); }
     case Type::Float: { double v; return ReadDouble(v); }
     case Type::Str:   { const char* s; uint32_t n; return ReadString(s, n); }
     case Type::Bin:   { const uint8_t* p; uint32_t n; return ReadBin(p, n); }

@@ -48,7 +48,15 @@ public:
     // entirely.
     bool ReadNil()                                    noexcept;
     bool ReadBool(bool& v)                            noexcept;
+    // ReadInt takes any msgpack integer form whose value fits int64. A uint64
+    // above INT64_MAX is refused with the position unchanged rather than wrapped
+    // negative, so the caller sees a failure and not a different number. Such a
+    // value is legal: Humanizer's last_seed reply field is one for about half of
+    // all accounts. A caller decoding arbitrary values falls back to ReadUInt.
     bool ReadInt(int64_t& v)                          noexcept;
+    // ReadUInt takes any msgpack integer form whose value is in 0..UINT64_MAX and
+    // refuses a negative one with the position unchanged.
+    bool ReadUInt(uint64_t& v)                        noexcept;
     bool ReadDouble(double& v)                        noexcept;
     // Returns a pointer into the source buffer — valid only as long as the
     // owning buffer outlives the use. Strings are NOT NUL-terminated; use
