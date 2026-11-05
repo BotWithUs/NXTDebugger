@@ -3,8 +3,9 @@
 // Decimal text of the msgpack integer the reader is positioned on, for code that
 // renders arbitrary values.
 //
-// Reader::ReadInt refuses a uint64 above INT64_MAX without advancing, and the agent
-// really sends those (last_seed in the humanizer stats reply). A renderer that only
+// Reader::ReadInt refuses a uint64 above INT64_MAX without advancing, and such a value
+// is legal (last_seed in the _debug.humanizer_status reply can be one, when an account
+// uuid is present). A renderer that only
 // calls ReadInt prints a wrong number and then misreads everything after it, so every
 // generic renderer comes through here.
 

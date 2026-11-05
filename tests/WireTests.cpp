@@ -353,6 +353,10 @@ void TestMsgPackJsonRange()
     const bool isTextOk = value.AsString() == "18446744073709551615";
     Check(isTextOk, "bridge keeps uint64 max's value", isTextOk, 1);
     Check(value.AsInt(-5) == -5, "AsInt on a high value returns the default", value.AsInt(-5), -5);
+    const bool isDoubleDefault = value.AsDouble(-5.0) == -5.0;
+    Check(isDoubleDefault, "AsDouble on a high value returns the default", isDoubleDefault, 1);
+    const bool isWritten = nxtdbg::ctl::ToJson(value) == "18446744073709551615";
+    Check(isWritten, "WriteJson prints a high value exactly", isWritten, 1);
     std::vector<uint8_t> back;
     const bool isEncoded = nxtdbg::ctl::JsonToMsgPack(value, back);
     const bool isSame = isEncoded && back.size() == sizeof(kUInt64Max) &&
