@@ -21,7 +21,7 @@ expressed in C++.
 | `ipc/SharedLayout.h` | Mapping layout, `kMagic`, `kProtocolVersion`, the `Snapshot` POD and every entry type in it. Every offset is pinned by `static_assert`. |
 | `ipc/Events.h` | Event ring discriminators (`kEvent*`) and the POD body for each. |
 | `ipc/WireCategory.h` | Stable semantic category for an interface component — the `category` field of the component map. |
-| `rpc/MsgPack.h`, `rpc/MsgPack.cpp` | Minimal MsgPack reader/writer for the RPC pipe. Convenience for C++ consumers; the format is standard MsgPack, so other languages should use their own library. |
+| `rpc/MsgPack.h`, `rpc/MsgPack.cpp` | Minimal MsgPack reader/writer for the RPC pipe. Convenience for C++ consumers; the format is standard MsgPack, so other languages should use their own library. `ReadInt` refuses a uint64 above INT64_MAX without advancing; a decoder of arbitrary values falls back to `ReadUInt`. |
 
 ## Do not edit these files here
 

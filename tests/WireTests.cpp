@@ -7,7 +7,10 @@
 // exit code is the number of failures, which is what ctest reads.
 
 #include "cache/Json.h"
+#include "ctl/MsgPackJson.h"
 #include "ctl/SelfJson.h"
+#include "rpc/DrawParams.h"
+#include "rpc/IntText.h"
 #include "wire/LocalPlayer.h"
 #include "wire/OpenIface.h"
 
@@ -23,6 +26,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -289,8 +293,91 @@ void TestCtlSelfGate()
     CheckCtlSelf("in world at index 0", kWorld, 0, 0, true);
 }
 
+void CheckIntText(const uint8_t *bytes, size_t size, const char *want, size_t wantPos,
+                  const char *what)
+{
+    nxt::rpc::msgpack::Reader reader(bytes, size);
+    const std::string text = nxtdbg::rpc::ReadIntText(reader);
+    const bool isOk = text == want && reader.Pos() == wantPos;
+    std::printf("%s  %-48s got %s at %zu, want %s at %zu\n", isOk ? "PASS" : "FAIL", what,
+                text.c_str(), reader.Pos(), want, wantPos);
+    if (!isOk)
+    {
+        ++failures;
+    }
+}
+
+const uint8_t kUInt64Max[] = {0xCF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+const uint8_t kFirstHigh[] = {0xCF, 0x80, 0, 0, 0, 0, 0, 0, 0};
+const uint8_t kInt64Top[]  = {0xCF, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+const uint8_t kInt64Min[]  = {0xD3, 0x80, 0, 0, 0, 0, 0, 0, 0};
+
+// The generic renderers' integer case, across the range the codec's ReadInt refuses.
+void TestIntText()
+{
+    const uint8_t minusOne[] = {0xFF};
+    const uint8_t cut[]      = {0xCF, 0xFF, 0xFF};
+    CheckIntText(kUInt64Max, sizeof(kUInt64Max), "18446744073709551615", 9, "uint64 max printed");
+    CheckIntText(kFirstHigh, sizeof(kFirstHigh), "9223372036854775808", 9, "2^63 printed");
+    CheckIntText(kInt64Top, sizeof(kInt64Top), "9223372036854775807", 9, "INT64_MAX in uint64 form");
+    CheckIntText(kInt64Min, sizeof(kInt64Min), "-9223372036854775808", 9, "int64 min");
+    CheckIntText(minusOne, sizeof(minusOne), "-1", 1, "-1 stays -1");
+    CheckIntText(cut, sizeof(cut), "?", 0, "truncated uint64 is not a number");
+}
+
+// A production renderer: what follows a high value must still decode.
+void TestValueToText()
+{
+    const uint8_t array[] = {0x92, 0xCF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x07};
+    nxt::rpc::msgpack::Reader reader(array, sizeof(array));
+    const std::string text = nxtdbg::rpc::ValueToText(reader);
+    const bool isOk = text.find("18446744073709551615") != std::string::npos &&
+                      text.find('7', text.find("18446744073709551615") + 20) != std::string::npos &&
+                      reader.AtEnd();
+    std::printf("%s  %-48s got %s\n", isOk ? "PASS" : "FAIL", "ValueToText walks past a high value",
+                text.c_str());
+    if (!isOk)
+    {
+        ++failures;
+    }
+}
+
+// nxtdbgctl's generic reply bridge: one high value must not fail the whole reply.
+void TestMsgPackJsonRange()
+{
+    using nxtdbg::cache::JsonType;
+    using nxtdbg::ctl::MsgPackToJson;
+    nxtdbg::cache::JsonValue value;
+    const bool isMaxOk = MsgPackToJson(kUInt64Max, sizeof(kUInt64Max), value);
+    Check(isMaxOk && value.type == JsonType::UInt, "bridge takes uint64 max as UInt", isMaxOk, 1);
+    const bool isTextOk = value.AsString() == "18446744073709551615";
+    Check(isTextOk, "bridge keeps uint64 max's value", isTextOk, 1);
+    Check(value.AsInt(-5) == -5, "AsInt on a high value returns the default", value.AsInt(-5), -5);
+    const bool isDoubleDefault = value.AsDouble(-5.0) == -5.0;
+    Check(isDoubleDefault, "AsDouble on a high value returns the default", isDoubleDefault, 1);
+    const bool isWritten = nxtdbg::ctl::ToJson(value) == "18446744073709551615";
+    Check(isWritten, "WriteJson prints a high value exactly", isWritten, 1);
+    std::vector<uint8_t> back;
+    const bool isEncoded = nxtdbg::ctl::JsonToMsgPack(value, back);
+    const bool isSame = isEncoded && back.size() == sizeof(kUInt64Max) &&
+                        std::memcmp(back.data(), kUInt64Max, back.size()) == 0;
+    Check(isSame, "uint64 max re-encodes byte-identical", isSame, 1);
+    const bool isTopOk = MsgPackToJson(kInt64Top, sizeof(kInt64Top), value) &&
+                         value.type == JsonType::Int && value.intVal == INT64_MAX;
+    Check(isTopOk, "INT64_MAX in uint64 form stays Int", isTopOk, 1);
+    const bool isMinOk = MsgPackToJson(kInt64Min, sizeof(kInt64Min), value) &&
+                         value.type == JsonType::Int && value.intVal == INT64_MIN;
+    Check(isMinOk, "int64 min is Int", isMinOk, 1);
+    const auto top = nxtdbg::ctl::JUInt(static_cast<uint64_t>(INT64_MAX));
+    const bool isCanonical = top.type == JsonType::Int && top.intVal == INT64_MAX;
+    Check(isCanonical, "JUInt(INT64_MAX) is Int", isCanonical, 1);
+}
+
 int main()
 {
+    TestIntText();
+    TestValueToText();
+    TestMsgPackJsonRange();
     TestLayoutPins();
     TestCtlSelfGate();
     TestPlayerPanelState();

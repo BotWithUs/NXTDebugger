@@ -19,6 +19,9 @@ using cache::JsonValue;
 JsonValue JNull();
 JsonValue JBool(bool v);
 JsonValue JInt(int64_t v);
+// At or below INT64_MAX this is JInt, so each integer has one representation.
+// Above it AsInt and AsDouble return their default rather than a wrong number.
+JsonValue JUInt(uint64_t v);
 JsonValue JDouble(double v);
 JsonValue JStr(std::string v);
 JsonValue JStr(const char *v);    // nullptr -> null
