@@ -2,6 +2,7 @@
 
 #include "app/App.h"
 #include "app/Theme.h"
+#include "wire/LocalPlayer.h"
 #include "wire/SnapshotReader.h"
 
 #include "imgui.h"
@@ -78,6 +79,17 @@ void DrawNotAttached()
         return;
     }
     theme::Subheading("Not attached to an agent.");
+    theme::EndCard();
+}
+
+void DrawNoLocalPlayer()
+{
+    if (!theme::BeginCard("ps.noplayer", "PLAYER", theme::kTextDim))
+    {
+        theme::EndCard();
+        return;
+    }
+    theme::Subheading("Attached. No local player: not in the world.");
     theme::EndCard();
 }
 
@@ -246,11 +258,18 @@ void DrawPlayerState(app::App &a)
     const auto *snap = a.session.IsOpen()
                            ? wire::CurrentSnapshot(a.session)
                            : nullptr;
-    if (!snap || snap->self.serverIndex < 0)
+    switch (wire::ClassifyPlayerPanel(snap))
     {
+    case wire::PlayerPanelState::NotAttached:
         DrawNotAttached();
         ImGui::End();
         return;
+    case wire::PlayerPanelState::NoLocalPlayer:
+        DrawNoLocalPlayer();
+        ImGui::End();
+        return;
+    case wire::PlayerPanelState::InWorld:
+        break;
     }
 
     DrawLocationCard(snap->self);

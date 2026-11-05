@@ -7,6 +7,7 @@
 // exit code is the number of failures, which is what ctest reads.
 
 #include "cache/Json.h"
+#include "wire/LocalPlayer.h"
 #include "wire/OpenIface.h"
 
 // The same compile-time pins the debugger builds with: a layout that drifts
@@ -221,9 +222,44 @@ void TestJsonDepthCap()
 
 }
 
+// One frame shape for the Player panel. selfFill is what self.serverIndex and the server
+// tile hold: -1 on a current agent, 0 on one before the pre-publish fix.
+void CheckPanel(const char *what, int32_t gameState, int32_t ownIndex, int32_t selfFill,
+                nxtdbg::wire::PlayerPanelState want)
+{
+    auto snap = std::make_unique<nxt::ipc::Snapshot>();
+    snap->gameState        = gameState;
+    snap->ownIndex         = ownIndex;
+    snap->self.serverIndex = selfFill;
+    snap->self.serverTileX = static_cast<int16_t>(selfFill);
+    CheckEq(what, static_cast<long long>(nxtdbg::wire::ClassifyPlayerPanel(snap.get())),
+            static_cast<long long>(want));
+}
+
+// The regression: self.serverIndex is -1 at the lobby since the agent's pre-publish fix,
+// and the panel read that as "not attached". Attachment and the world are separate.
+void TestPlayerPanelState()
+{
+    using nxtdbg::wire::PlayerPanelState;
+    constexpr int32_t kLobby = 20;
+    constexpr int32_t kWorld = 30;
+    CheckEq("no session: not attached",
+            static_cast<long long>(nxtdbg::wire::ClassifyPlayerPanel(nullptr)),
+            static_cast<long long>(PlayerPanelState::NotAttached));
+    CheckPanel("lobby, current agent", kLobby, -1, -1, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("lobby, older agent", kLobby, -1, 0, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("no-client frame", 0, -1, -1, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("all-zero frame, older agent", 0, 0, 0, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("state 30, player not resolved", kWorld, -1, -1, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("state 30, not resolved, older agent", kWorld, -1, 0, PlayerPanelState::NoLocalPlayer);
+    CheckPanel("in world", kWorld, 123, 123, PlayerPanelState::InWorld);
+    CheckPanel("in world at index 0", kWorld, 0, 0, PlayerPanelState::InWorld);
+}
+
 int main()
 {
     TestLayoutPins();
+    TestPlayerPanelState();
     TestDecodeFlags();
     TestReservedBitsIsolated();
     TestReadFixture();

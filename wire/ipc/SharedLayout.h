@@ -227,7 +227,7 @@ inline constexpr uint32_t kDynChunkCap = 16384;
 // kOrientationUnknown. Nothing in 0x4000..0xFFFE is ever written, so a consumer
 // may treat such a value as a producer bug. Test "known" with
 // `orientation != kOrientationUnknown`; never infer it from tileX, because the
-// out-of-world self block is zero-filled, not -1-filled.
+// out-of-world self block's tileX reads 0, not -1.
 //
 // What it measures: the entity model's CURRENT (rendered) facing -- the
 // GraphNode rotation quaternion, not the goal of a turn in progress and not a
@@ -347,11 +347,11 @@ static_assert(alignof(SkillEntry) == 4);
 
 // Self-state block. Valid only when Snapshot::ownIndex >= 0, which the
 // producer sets only in the world (gameState == 30 with a resolved logged-in
-// player). Otherwise the block is zero-filled -- so serverIndex reads 0, not
-// -1, and must not be used as the validity test -- with one exception:
-// orientation holds kOrientationUnknown (0xFFFF), because a zero there would
-// read as a valid facing. In the world, a self whose scene entity has not
-// resolved yet reports tileX/tileY/plane == -1 and orientation == 0xFFFF.
+// player). Otherwise the block is zero-filled except where a zero would read as
+// a real value: serverIndex and serverTileX/serverTileY/serverPlane hold -1 and
+// orientation holds kOrientationUnknown (0xFFFF). tileX/tileY/plane read 0, so
+// ownIndex remains the validity test. In the world, a self whose scene entity
+// has not resolved yet reports tileX/tileY/plane == -1 and orientation == 0xFFFF.
 struct LocalPlayer {
     int32_t  serverIndex;     // 0   matches Snapshot::ownIndex when in-world
     int32_t  combatLevel;     // 4
@@ -385,14 +385,14 @@ struct LocalPlayer {
     uint32_t   skillCount;    // 36
     SkillEntry skills[kSkillCap];  // 40; 32 * 16 = 512 → ends at 552
     // v24. Appended after skills[] so every older offset is unmoved; two i32s
-    // keep the block a multiple of 8. Zero outside the world, like the rest.
+    // keep the block a multiple of 8. Zero outside the world.
     int32_t  runEnergy;       // 552 run energy, 0..100, as the run orb shows it
     int32_t  runWeight;       // 556 weight in kg as the client holds it. The
                               //     offset is static-verified only: one live
                               //     check could not discriminate (see
                               //     docs/PUBLIC_PROTOCOL.md).
     // v25 server tile, same meaning and -1 rule as PlayerEntry. Appended so every
-    // older offset is unmoved. Zero outside the world, like the rest of the block.
+    // older offset is unmoved. -1 outside the world, where 0 would read as a tile.
     int16_t  serverTileX;     // 560
     int16_t  serverTileY;     // 562
     int8_t   serverPlane;     // 564
@@ -597,7 +597,7 @@ static_assert(offsetof(DynamicRegion, requiredChunks) == 32);
 // At 60 Hz publish and ~80 KB snapshot, a memcpy reader finishes in microseconds.
 struct Snapshot {
     // This producer's publish counter: +1 per client logic step (~20ms), even
-    // when not in-game, starting at 1 when the producer attaches. It is NOT a
+    // when not in-game, starting at 1 at the first publish (0 before it). It is NOT a
     // server tick and NOT the client's cycle counter — read serverTick or
     // gameCycle below for those. Useful only as a "did the snapshot advance"
     // liveness signal; two agents attached to the same client disagree on it.
@@ -615,7 +615,7 @@ struct Snapshot {
     // padding a job. Both sides still agree on every downstream offset.
     int32_t  serverTick;
 
-    LocalPlayer self;      // own-player block; zeroed when not in-world
+    LocalPlayer self;      // own-player block; reset when not in-world (see LocalPlayer)
 
     uint32_t    npcCount;
     NpcEntry    npcs[kNpcCap];

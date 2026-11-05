@@ -71,6 +71,20 @@ Then validate, in this order:
 2. `version` == `25`. Mismatch → refuse (see §1).
 3. `headerSize` == 64 and `snapshotSize` == 469192 as a sanity check.
 
+`magic` is the last field the producer writes, with a full barrier, after both
+snapshot buffers and the rest of the header, so read it first. A consumer that
+opens the mapping too early sees `magic` `0` and should retry. An aligned 32-bit
+read on x64 already has acquire ordering in the hardware; where a compiler could
+move the read, use an acquire or volatile read to stop it.
+
+A valid header does not mean a frame has been published, and an agent whose
+game-thread hook failed to install stays in this state for its whole session.
+From the moment `magic` is valid, both buffers hold the no-client frame:
+`publishSeq` `0`, `gameState` `0`, `ownIndex` -1, `rootIfaceId` -1, `serverTick`
+-1, `gameCycle` `0`, every count `0`, and `self` in its out-of-world shape (§2.7).
+Agents before NXTLibrary `3c4db5e` left those buffers all zeros instead, so
+`ownIndex` read `0` there.
+
 ### 2.2 Region geometry
 
 | Constant | Value |
@@ -137,7 +151,7 @@ for you.
 |---|---|---|---|
 | `publishSeq` | 0 | 8 | u64, producer republish counter — **not a clock**, see §2.6 |
 | `gameState` | 8 | 4 | `10` login, `20` lobby, `30` in-game |
-| `ownIndex` | 12 | 4 | local player's server index; -1 unless `gameState == 30` |
+| `ownIndex` | 12 | 4 | local player's server index; -1 unless `gameState == 30`. Can also be -1 at state 30, until the client's logged-in player resolves. Gate on `gameState == 30 && ownIndex >= 0` |
 | `rootIfaceId` | 16 | 4 | active root interface; -1 if none |
 | `serverTick` | 20 | 4 | **600ms server tick — pace on this**, see §2.6 |
 | `self` | 24 | 568 | `LocalPlayer`, §2.7 |
@@ -222,10 +236,12 @@ compare or substitute them.
 
 ### 2.7 `LocalPlayer` (568 bytes, at snapshot offset 24)
 
-Zero-filled when not in-world — so `serverIndex` then reads `0`, not `-1`;
-test `ownIndex == -1` for "no local player". One exception: `orientation`
-holds the `0xFFFF` sentinel, because a zero there would read as a valid
-facing (§2.8, *Entity orientation*).
+Valid only when `gameState == 30 && ownIndex >= 0`, which is the test to use.
+Otherwise the block is zero-filled except where a zero would read as a real
+value: `serverIndex` and `serverTileX`/`serverTileY`/`serverPlane` hold -1, and
+`orientation` holds the `0xFFFF` sentinel (§2.8, *Entity orientation*).
+`tileX`/`tileY`/`plane` read `0`. Agents before NXTLibrary `3c4db5e` published `0`
+in `serverIndex` and the server tile, so do not use those as the test either.
 
 | field | off | size |
 |---|---|---|
@@ -246,9 +262,9 @@ facing (§2.8, *Entity orientation*).
 | `_orientationPad` | 34 | 2 | zero |
 | `skillCount` | 36 | 4 |
 | `skills` | 40 | 512 | `SkillEntry[32]`, stride 16 |
-| `runEnergy` | 552 | 4 | i32, **v24+**. Run energy 0..100, the run-orb number. `-1` = unreadable in-world (player state not reachable, or the client channel lacks the offset); `0` outside the world like the rest of the block. |
+| `runEnergy` | 552 | 4 | i32, **v24+**. Run energy 0..100, the run-orb number. `-1` = unreadable in-world (player state not reachable, or the client channel lacks the offset); `0` outside the world. |
 | `runWeight` | 556 | 4 | i32, **v24+**. Weight in kg as the client holds it; same `-1`/`0` rules. **Not independently verified** (the one live check could not discriminate). |
-| `serverTileX` | 560 | 2 | i16, **v25+**. Where the server last told the client this entity is going; see *Server tile* in §2.8. `-1` in all three when unreadable, and always on beta; `0` outside the world like the rest of the block. |
+| `serverTileX` | 560 | 2 | i16, **v25+**. Where the server last told the client this entity is going; see *Server tile* in §2.8. `-1` in all three when unreadable, always on beta, and outside the world. |
 | `serverTileY` | 562 | 2 | i16, **v25+**. |
 | `serverPlane` | 564 | 1 | i8, **v25+**. |
 | `_serverTilePad` | 565 | 3 | zero |
@@ -303,7 +319,7 @@ do not carry the fields. The `players[]` row for `ownIndex` agrees with `self`.
 - **Known vs unknown.** `0xFFFF` means unknown: the entity has no position yet
   (`tileX == -1`), the read failed, or the local player is not in the world.
   Test `orientation != 0xFFFF`. **Never** infer it from `tileX`: the
-  out-of-world `LocalPlayer` block is zero-filled, so its `tileX` reads `0`.
+  out-of-world `LocalPlayer` block's `tileX` reads `0`, not -1.
 - **What it measures.** The entity model's **current, rendered** facing: the
   rotation quaternion on its scene node, not the goal of a turn in progress and
   not a movement direction. The producer converts it with the client's own
@@ -1523,7 +1539,7 @@ consumer filter, as before v24.
 ## 6. Writing a consumer — checklist
 
 1. Find the client pid; open `Local\nxt_snapshot_<pid>`.
-2. Validate magic, then version. **Refuse on version mismatch.**
+2. Validate magic, then version. **Refuse on version mismatch.** Retry while magic reads `0`.
 3. Read `frontIdx` with acquire, bulk-copy that buffer, parse the copy.
 4. Initialise `lastSeq = ring.head` so you skip history.
 5. Drain the event ring each frame using the `seq` protocol in §3.2.
