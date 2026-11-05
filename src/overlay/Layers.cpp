@@ -2,6 +2,7 @@
 
 #include "rpc/DrawParams.h"
 #include "rpc/MsgPack.h"
+#include "wire/LocalPlayer.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,7 +21,6 @@ using nxt::rpc::msgpack::Writer;
 namespace
 {
 
-constexpr int32_t kGameStateInGame = 30;
 constexpr int     kMinDrawTtlMs    = 2000;
 constexpr int     kMaxDrawTtlMs    = 60000;
 constexpr int     kTtlIntervals    = 5;   // TTL = five refresh intervals
@@ -119,7 +119,7 @@ int Clamp(int v, int lo, int hi)
 
 bool IsInWorld(const nxt::ipc::Snapshot &s)
 {
-    return s.gameState == kGameStateInGame && s.ownIndex >= 0 && s.self.serverIndex >= 0;
+    return wire::HasLocalPlayer(s);
 }
 
 // Plane + distance gate shared by every layer: a candidate on another floor or

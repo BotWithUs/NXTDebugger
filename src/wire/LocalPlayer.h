@@ -18,7 +18,9 @@ inline bool HasLocalPlayer(const nxt::ipc::Snapshot &s) noexcept
 
 // What the Player panel should draw. Pure, so WireTests can drive the panel's own
 // decision without ImGui. snap is wire::CurrentSnapshot's result: null means there is no
-// attached session, and nothing else does.
+// frame to read, because no session is attached or because the mapping's frontIdx holds
+// a value other than 0 or 1. Only a null means not attached here; self.serverIndex
+// plays no part in it.
 enum class PlayerPanelState
 {
     NotAttached,

@@ -52,6 +52,7 @@ Requirements: Windows 10/11 x64, Visual Studio 2022 (v143 toolset),
 CMake 3.25+, PowerShell.
 
 ```powershell
+cmake -P cmkr.cmake
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
@@ -63,7 +64,8 @@ other third-party dependencies.
 The build is warning-clean under `/W4 /WX`.
 
 [cmkr](https://github.com/build-cpp/cmkr) generates `CMakeLists.txt` from
-`cmake.toml` — edit `cmake.toml`, never `CMakeLists.txt`.
+`cmake.toml` — edit `cmake.toml`, never `CMakeLists.txt`. The file is gitignored, so
+a fresh checkout needs the `cmake -P cmkr.cmake` line above to create it.
 
 ## Usage
 
