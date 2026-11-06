@@ -87,6 +87,8 @@ endif()
 # structs and the RPC method catalog, compared in both directions. It needs no
 # producer checkout for the event halves (both sides are in wire/) and skips the
 # method half when none is present, exactly as the hash check does.
+# It reads the same producer the hash check does (NXTLIB_SRC), so pointing that
+# at another checkout moves both checks together.
 #
 # The offsets half is the compiler's: src/wire/ProtocolDocPins.h pins every
 # absolute figure the document prints to a real offsetof.
@@ -109,6 +111,7 @@ endif()
 execute_process(
     COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_protocol_doc.ps1
+            -NxtLibraryRoot ${NXTLIB_SRC}/..
     RESULT_VARIABLE _doc_result
     OUTPUT_VARIABLE _doc_output
     ERROR_VARIABLE  _doc_output)

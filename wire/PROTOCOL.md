@@ -595,6 +595,7 @@ replaying a full ring of stale events.
 | 20 | chat message | `ChatMessageBody` |
 | 30 | key input | `KeyInputBody` |
 | 40 | action executed | `ActionExecutedBody` |
+| 41 | action refused | `ActionRefusedBody` |
 | 50 | break started | `BreakStartedBody` |
 | 51 | break ended | *(none)* |
 | 60 | walk arrived | `WalkBody` — *permanently reserved, never emitted* |
@@ -604,6 +605,12 @@ replaying a full ring of stale events.
 | 71 | headbar | `HeadbarBody` |
 | 72 | spot anim | `SpotAnimBody` |
 | 80 | radio group select | `RadioGroupSelectBody` |
+
+Type 41 means a queued action was dropped without being dispatched, because its
+target never became clickable; no type 40 follows it. `reason`: 1 no_target,
+2 anchor_timeout, 3 no_opener. `anchorCase`: 0 none, 1 scroll, 2 open, 3 camera,
+4 wait. Both sets of values are permanent. It is additive and does not bump the
+protocol version.
 
 Types 10 and 12 share a body shape; **switch on the discriminator** to know
 whether `varpId` is a varp or a varc id.
@@ -624,6 +631,7 @@ All fields int32 at 4-byte strides unless noted.
 | `VarbitChangeBody` (12) | `varbitId` 0, `oldValue` 4, `newValue` 8 |
 | `ObjVarChangeBody` (20) | `invId` 0, `slot` 4, `varId` 8, `oldValue` 12, `newValue` 16 |
 | `ActionExecutedBody` (16) | `actionId` 0, `param1` 4, `param2` 8, `param3` 12 |
+| `ActionRefusedBody` (28) | `actionId` 0, `param1` 4, `param2` 8, `param3` 12, `reason` 16 (u32), `anchorCase` 20 (u32), `heldMs` 24 (u32) |
 | `WalkBody` (8) | `targetX` 0, `targetY` 4 |
 | `HitmarkBody` (20) | `targetServerIndex` 0, `targetType` 4 (i8), `hitmarkType` 8, `damage` 12, `cycle` 16 |
 | `HeadbarBody` (16) | `targetServerIndex` 0, `targetType` 4 (i8), `headbarType` 8, `value` 12 |
@@ -697,7 +705,7 @@ no game memory, so it answers at every login state.
 | Licensing | `agent.set_license` |
 | Broker | `_debug.subscribe`, `_debug.unsubscribe`, `_debug.publish` |
 | Clocks / state | `get_game_cycle`, `get_login_state` |
-| Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked` |
+| Action queue | `queue_action`, `queue_actions`, `get_action_queue_size`, `clear_action_queue`, `get_action_history`, `get_last_action_time`, `set_actions_blocked`, `are_actions_blocked`, `get_anchor_config`, `set_anchor_config`, `_debug.action_target` |
 | Session | `set_world`, `change_login_state`, `login_to_lobby`, `login_to_game`, `exit_to_lobby`, `get_auto_login`, `set_auto_login`, `get_token_refresher`, `set_token_refresher`, `trigger_token_refresh`, `schedule_break`, `interrupt_break`, `get_account_info`, `get_current_world` |
 | Entities | `get_player_appearance`, `query_hint_arrows`, `get_overhead_text`, `get_headbars` |
 | Capture | `take_screenshot`, `start_stream`, `stop_stream` |
@@ -705,8 +713,15 @@ no game memory, so it answers at every login state.
 | Interfaces | `get_component`, `get_components`, `get_static_children`, `get_dynamic_children`, `get_interface_tree`, `find_component_at` |
 | Proxy | `proxy_status` |
 | Variables | `get_varp`, `get_varps`, `get_varc_int`, `get_varcs_int`, `get_varc_string`, `get_varcs_string`, `get_obj_vars` |
-| Scene queries | `query_spot_anims`, `query_world_map_elements`, `_debug.entity_facing` |
+| Scene queries | `query_spot_anims`, `query_world_map_elements`, `_debug.entity_facing`, `_debug.minimap_probe` |
 | Debug drawing | `debug_draw_set`, `debug_draw_set_batch`, `debug_draw_clear`, `debug_draw_clear_all`, `debug_draw_list`, `debug_draw_enable`, `debug_draw_stats`, `debug_draw_probe_pixels`, `highlight_component`, `highlight_entity`, `highlight_tile`, `highlight_area` |
+
+`get_anchor_config` / `set_anchor_config {timeout_ms}` read and set how long the agent
+holds a queued action whose target is not yet clickable before refusing it (event 41);
+`timeout_ms` is 0..30000, default 3000. `_debug.action_target {action_id, param1?,
+param2?, param3?}` and `_debug.minimap_probe {tile_x, tile_y}` are read-only
+diagnostics: what the agent's click resolve sees for an action, and the minimap click
+point for a tile. Nothing is clicked or queued by either.
 
 `get_player_appearance {serverIndex}` (**v24 agents**) returns
 `{render_id, npc_transform_id, gender, slots: [{kit, item}], colours: [int]}` for a
