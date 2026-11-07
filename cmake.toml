@@ -131,7 +131,8 @@ message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
 # overlay/DrawTypes.h carries game internals that must not be published).
 #
 # Same conditional shape as the two above: the script self-skips when no
-# producer checkout sits beside us, so a public clone still configures.
+# producer checkout sits beside us, so a public clone still configures. Like
+# the doc check, it reads the producer NXTLIB_SRC names, not a fixed sibling.
 #
 # The success path echoes the script's OWN last line rather than a fixed
 # string. A fixed "caps match the producer" would print identically whether 11
@@ -142,6 +143,7 @@ message(STATUS "NXTDebugger: wire/PROTOCOL.md matches the wire surface")
 execute_process(
     COMMAND ${NXTDBG_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_draw_caps.ps1
+            -NxtLibraryRoot ${NXTLIB_SRC}/..
     RESULT_VARIABLE _caps_result
     OUTPUT_VARIABLE _caps_output
     ERROR_VARIABLE  _caps_output)
