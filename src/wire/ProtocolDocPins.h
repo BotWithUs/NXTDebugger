@@ -216,6 +216,7 @@ static_assert(sizeof(VarChangeBody) == 12);
 static_assert(sizeof(VarbitChangeBody) == 12);
 static_assert(sizeof(ObjVarChangeBody) == 20);
 static_assert(sizeof(ActionExecutedBody) == 16);
+static_assert(sizeof(ActionRefusedBody) == 28);
 static_assert(sizeof(WalkBody) == 8);
 static_assert(sizeof(HitmarkBody) == 20);
 static_assert(sizeof(HeadbarBody) == 16);
