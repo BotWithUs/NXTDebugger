@@ -211,35 +211,12 @@ bool ContainsNoCase(const char *hay, const char *needle)
 // Cache open card (compact; shares the App-level handle with Cache lookup)
 // ---------------------------------------------------------------------------
 
-bool DirExists(const wchar_t *path)
-{
-    DWORD attr = GetFileAttributesW(path);
-    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
-}
-
+// Probe the usual NXT cache roots so "Open" works without retyping.
 void DefaultCachePath(char *out, size_t n)
 {
-    // Probe the usual NXT cache roots and pick the first that exists, so "Open"
-    // works without retyping. The standard Jagex Launcher install keeps the
-    // js5-*.jcache files under ProgramData; older/standalone clients used
-    // LOCALAPPDATA. Falls back to the ProgramData path when neither is present.
-    wchar_t progData[MAX_PATH];
-    std::swprintf(progData, MAX_PATH, L"%s", L"C:\\ProgramData\\Jagex\\RuneScape");
-
-    wchar_t localCache[MAX_PATH] = {};
-    wchar_t local[MAX_PATH];
-    DWORD   got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-    if (got != 0 && got < MAX_PATH)
-    {
-        std::swprintf(localCache, MAX_PATH, L"%s\\Jagex\\RuneScape\\Cache", local);
-    }
-
-    const wchar_t *chosen = progData;
-    if (!DirExists(progData) && localCache[0] && DirExists(localCache))
-    {
-        chosen = localCache;
-    }
-    WideCharToMultiByte(CP_UTF8, 0, chosen, -1, out, static_cast<int>(n), nullptr, nullptr);
+    const std::wstring chosen = cache::DefaultCacheDir();
+    WideCharToMultiByte(CP_UTF8, 0, chosen.c_str(), -1, out, static_cast<int>(n),
+                        nullptr, nullptr);
 }
 
 void DrawCacheOpen(app::App &a)

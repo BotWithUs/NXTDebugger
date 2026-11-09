@@ -10,6 +10,12 @@ namespace nxtdbg::cache
 namespace
 {
 
+bool DirExists(const wchar_t *path)
+{
+    DWORD attr = GetFileAttributesW(path);
+    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 std::string WideToUtf8(const std::wstring &w)
 {
     if (w.empty())
@@ -24,6 +30,22 @@ std::string WideToUtf8(const std::wstring &w)
     return out;
 }
 
+}
+
+std::wstring DefaultCacheDir()
+{
+    const std::wstring progData = L"C:\\ProgramData\\Jagex\\RuneScape";
+    wchar_t local[MAX_PATH];
+    DWORD   got = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+    if (got != 0 && got < MAX_PATH && !DirExists(progData.c_str()))
+    {
+        std::wstring localCache = std::wstring(local) + L"\\Jagex\\RuneScape\\Cache";
+        if (DirExists(localCache.c_str()))
+        {
+            return localCache;
+        }
+    }
+    return progData;
 }
 
 CacheClient::~CacheClient()

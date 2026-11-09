@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -41,6 +42,25 @@ public:
     // bundled tables when the cache's own enumeration is unavailable. `out` is
     // cleared first; left empty for an unmapped type.
     void ListIds(const char *cacheType, std::vector<int> &out);
+
+    // Name -> id search over one table, case-insensitive. `isExact` matches the
+    // whole name; otherwise `needle` is a substring. Accepts the same type names
+    // as NameForCacheType plus "component" (ids are the composite
+    // (iface << 16) | comp). Results are appended to `out` sorted by id, at most
+    // `maxResults` of them; returns the total number of matches, which may
+    // exceed what was appended.
+    struct Match
+    {
+        int32_t     id;
+        std::string name;
+    };
+    size_t Search(const char *cacheType, std::string_view needle, bool isExact,
+                  size_t maxResults, std::vector<Match> &out);
+
+    // True when `cacheType` names a table this class can resolve: any type
+    // NameForCacheType maps (plus the aliases interface, obj, graphic, varc),
+    // or "component". Lets a caller tell "unknown kind" apart from "no name".
+    static bool IsKnownType(const char *cacheType);
 
 private:
     struct Table

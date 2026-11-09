@@ -181,6 +181,76 @@ void GameVal::ListIds(const char *cacheType, std::vector<int> &out)
     std::sort(out.begin(), out.end());
 }
 
+namespace
+{
+
+char FoldAscii(char c)
+{
+    return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 32) : c;
+}
+
+bool NameMatches(const std::string &name, std::string_view needle, bool isExact)
+{
+    if (isExact && name.size() != needle.size())
+    {
+        return false;
+    }
+    if (needle.size() > name.size())
+    {
+        return false;
+    }
+    const size_t last = isExact ? 0 : name.size() - needle.size();
+    for (size_t start = 0; start <= last; ++start)
+    {
+        size_t k = 0;
+        while (k < needle.size() && FoldAscii(name[start + k]) == FoldAscii(needle[k]))
+        {
+            ++k;
+        }
+        if (k == needle.size())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+}   // namespace
+
+size_t GameVal::Search(const char *cacheType, std::string_view needle, bool isExact,
+                       size_t maxResults, std::vector<Match> &out)
+{
+    const bool  isComponent = cacheType && std::strcmp(cacheType, "component") == 0;
+    const char *gv          = isComponent ? "component" : GamevalFile(cacheType);
+    if (!gv || needle.empty())
+    {
+        return 0;
+    }
+    Table &t = LoadType(gv);
+    std::vector<Match> hits;
+    for (const auto &kv : t.entries)
+    {
+        if (NameMatches(kv.second, needle, isExact))
+        {
+            hits.push_back({ kv.first, kv.second });
+        }
+    }
+    std::sort(hits.begin(), hits.end(),
+              [](const Match &l, const Match &r) { return l.id < r.id; });
+    const size_t total = hits.size();
+    for (size_t i = 0; i < hits.size() && i < maxResults; ++i)
+    {
+        out.push_back(std::move(hits[i]));
+    }
+    return total;
+}
+
+bool GameVal::IsKnownType(const char *cacheType)
+{
+    return cacheType
+        && (std::strcmp(cacheType, "component") == 0 || GamevalFile(cacheType) != nullptr);
+}
+
 const char *GameVal::ComponentName(int32_t iface, int32_t comp)
 {
     if (iface < 0 || comp < 0)
@@ -222,6 +292,12 @@ const char *GameVal::GamevalFile(const char *cacheType)
         { "model",  "model"      },
         { "dbrow",  "dbrow"      },
         { "quest",  "quest"      },
+        // Aliases the control pipe accepts: the gameval file names themselves,
+        // and varc (client vars), which no cache panel browses.
+        { "interface", "interface"  },
+        { "obj",       "obj"        },
+        { "graphic",   "graphic"    },
+        { "varc",      "var_client" },
     };
     for (const auto &m : kMap)
     {

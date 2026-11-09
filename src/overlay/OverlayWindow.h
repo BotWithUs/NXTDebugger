@@ -3,13 +3,16 @@
 
 struct ImGuiContext;
 
-namespace nxtdbg::app { struct App; }
+namespace nxtdbg::app { struct App; struct InterfaceView; }
 
 namespace nxtdbg::overlay
 {
 
-// A transparent, topmost, click-through window that paints interface-component
-// bounding boxes on top of the live game. It owns its own OpenGL + ImGui
+// A transparent, click-through window that paints interface-component
+// bounding boxes on top of the live game. It sits directly above the game in
+// z-order (never topmost, so other apps cover it) and shows only while there
+// are boxes and the game, or the debugger over a non-minimised game, is in
+// front. It owns its own OpenGL + ImGui
 // context, fully separate from the main debugger window, and tracks the game
 // window's client area each frame so the boxes line up pixel-for-pixel.
 //
@@ -36,6 +39,11 @@ bool RegisterWindowClass(HINSTANCE inst);
 void UnregisterWindowClass(HINSTANCE inst);
 
 bool IsCreated(const OverlayWindow &o);
+
+// Anything to paint: a selected interface with at least one visible box. The
+// window is created only once this holds and is hidden whenever it does not;
+// the overlay draws no text of its own.
+bool HasVisibleBoxes(const app::InterfaceView &v);
 
 // Build the window + GL context + ImGui context for `gamePid`. Must be called
 // with the main GL context current (used to resolve the WGL ARB entry points).

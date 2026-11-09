@@ -27,6 +27,10 @@ void DrainEvents(App &a)
     }
     std::vector<wire::EventRecord> fresh;
     a.events.Drain(a.session, fresh);
+    if (!fresh.empty())
+    {
+        ctl::RecordEvents(a, fresh);
+    }
     for (auto &r : fresh)
     {
         a.eventBacklog.push_back(r);
@@ -168,6 +172,7 @@ void BuildDefaultLayout(ImGuiID dockId)
     ImGui::DockBuilderDockWindow("Script Context", right);
     ImGui::DockBuilderDockWindow("Var Watcher",    right);
     ImGui::DockBuilderDockWindow("Session",        right);
+    ImGui::DockBuilderDockWindow("Layers",         right);
 
     // Bottom — streaming / log surfaces.
     ImGui::DockBuilderDockWindow("Log",         bottom);
@@ -226,12 +231,24 @@ void DrawMenuBar(App &a)
     }
     if (ImGui::BeginMenu("Overlay"))
     {
-        ImGui::MenuItem("Game overlay", nullptr, &a.overlayEnabled);
+        if (ImGui::MenuItem("Game overlay", nullptr, &a.overlayEnabled))
+        {
+            ImGui::MarkIniSettingsDirty();   // persisted with the Layers settings
+        }
         ImGui::TextDisabled("draws the Interfaces panel's");
         ImGui::TextDisabled("selected iface on the live game");
         ImGui::Separator();
         ImGui::MenuItem("Show all labels",        nullptr, &a.overlayShowAllLabels);
         ImGui::MenuItem("Only when game focused", nullptr, &a.overlayFollowFg);
+        ImGui::Separator();
+        ImGui::TextDisabled("npcs, players, locs, ground items:");
+        for (auto &p : a.panels)
+        {
+            if (std::strcmp(p.name, "Layers") == 0)
+            {
+                ImGui::MenuItem("Layers panel", nullptr, &p.open);
+            }
+        }
         ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -261,9 +278,11 @@ void App::Init()
         { "Session",      false, &panels::DrawSessionHealth     },
         { "Debug Draw",   false, &panels::DrawDebugDraw         },
         { "Log",          false, &panels::DrawLogPanel          },
+        { "Layers",       false, &panels::DrawLayersPanel       },
     };
     ApplyDefaultVisibility(*this);
     gameval.Init();
+    panels::RegisterLayerSettings(*this);
     theme::Apply();
 }
 
@@ -271,7 +290,11 @@ void App::Update()
 {
     DrainEvents(*this);
     UpdateTapConnection(*this);
+    // Clear what the layers drew while the outgoing connection still exists.
+    overlay::ReleaseLayersOnDetach(*this);
     UpdateRpcConnection(*this);
+    overlay::UpdateLayers(*this);
+    ctl::PumpControl(*this);
     UpdateTickPulse(*this);
 
     // Implicit dockspace covering the main viewport. PassthruCentralNode keeps

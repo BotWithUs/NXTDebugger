@@ -2,6 +2,7 @@
 
 #include <TlHelp32.h>
 #include <algorithm>
+#include <cstdio>
 #include <cwctype>
 
 namespace nxtdbg::attach
@@ -67,6 +68,27 @@ std::vector<ProcessEntry> ListGameProcesses()
         return primary;
     }
     return fallback;
+}
+
+std::vector<ProcessEntry> ListAgentProcesses()
+{
+    std::vector<ProcessEntry> out;
+    for (ProcessEntry &p : ListGameProcesses())
+    {
+        if (!IsPrimary(ToLower(p.exeName)))
+        {
+            continue;   // the launcher fallbacks never carry the agent
+        }
+        wchar_t name[64];
+        swprintf_s(name, L"Local\\nxt_snapshot_%lu", p.pid);
+        HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        if (m)
+        {
+            CloseHandle(m);
+            out.push_back(std::move(p));
+        }
+    }
+    return out;
 }
 
 }

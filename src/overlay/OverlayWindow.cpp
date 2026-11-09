@@ -216,6 +216,27 @@ void HideOverlay(OverlayWindow &o)
     }
 }
 
+// Move the overlay onto the game's client area and directly above the game in
+// z-order -- never topmost, so any other app brought in front covers it the way
+// it covers the game. Inserting after the window just above the game puts the
+// overlay between the two; when the game is the top non-topmost window (the
+// window above it is topmost, or there is none) HWND_TOP is the same spot.
+// No owner link: a cross-process owner would join the two input queues.
+void PlaceAboveGame(OverlayWindow &o, POINT origin, int w, int h)
+{
+    HWND above = GetWindow(o.gameHwnd, GW_HWNDPREV);
+    UINT flags = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    if (above == o.hwnd)
+    {
+        flags |= SWP_NOZORDER;   // already in place
+    }
+    else if (!above || (GetWindowLongPtrW(above, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0)
+    {
+        above = HWND_TOP;
+    }
+    SetWindowPos(o.hwnd, above, origin.x, origin.y, w, h, flags);
+}
+
 // Resolve / reposition the overlay over the game's client area. Returns false
 // (after hiding) when there's nothing to draw this frame; on success fills the
 // client width/height.
@@ -248,8 +269,7 @@ bool UpdateTracking(OverlayWindow &o, bool followForeground, int &outW, int &out
         HideOverlay(o);
         return false;
     }
-    SetWindowPos(o.hwnd, HWND_TOPMOST, origin.x, origin.y, outW, outH,
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    PlaceAboveGame(o, origin, outW, outH);
     if (!o.shown)
     {
         ShowWindow(o.hwnd, SW_SHOWNOACTIVATE);
@@ -306,25 +326,13 @@ void DrawOneBox(ImDrawList *dl, const app::OverlayBox &b, bool showLabel, bool i
     }
 }
 
-void DrawHint(ImDrawList *dl, const app::InterfaceView &v)
-{
-    const char *msg = (v.iface < 0)
-        ? "NXTDebugger overlay: select an interface in the Interfaces panel"
-        : "NXTDebugger overlay: no visible components";
-    dl->AddText(ImVec2(9.0f, 9.0f), IM_COL32(0, 0, 0, 200), msg);
-    dl->AddText(ImVec2(8.0f, 8.0f), theme::kAccent, msg);
-}
-
+// The overlay never paints text of its own: with nothing selected the window
+// is hidden, and the Layers panel says why.
 void DrawBoxes(app::App &a)
 {
     const app::InterfaceView &v = a.interfaceView;
     ImDrawList *dl = ImGui::GetForegroundDrawList();
 
-    if (v.boxes.empty())
-    {
-        DrawHint(dl, v);
-        return;
-    }
     // Containers first (BFS order already puts parents before leaves), then the
     // hovered box last so it sits on top of everything it overlaps.
     int hoverIdx = -1;
@@ -375,13 +383,25 @@ bool IsCreated(const OverlayWindow &o)
     return o.hwnd != nullptr;
 }
 
+bool HasVisibleBoxes(const app::InterfaceView &v)
+{
+    for (const app::OverlayBox &b : v.boxes)
+    {
+        if (b.hidden != 1)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Create(OverlayWindow &o, HINSTANCE inst, DWORD gamePid)
 {
     o = OverlayWindow{};
     o.gamePid = gamePid;
 
     o.hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
         kOverlayClass, L"NXTDebugger Overlay", WS_POPUP,
         0, 0, 16, 16, nullptr, nullptr, inst, nullptr);
     if (!o.hwnd)
@@ -406,6 +426,11 @@ void RenderFrame(OverlayWindow &o, app::App &a)
     }
     const float dtIn = ImGui::GetIO().DeltaTime;   // main context is current here
 
+    if (!HasVisibleBoxes(a.interfaceView))
+    {
+        HideOverlay(o);
+        return;   // nothing selected / nothing visible: no window on screen
+    }
     int w = 0;
     int h = 0;
     if (!UpdateTracking(o, a.overlayFollowFg, w, h))

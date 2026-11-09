@@ -2,6 +2,7 @@
 
 #include "app/App.h"
 #include "app/Theme.h"
+#include "wire/LocalPlayer.h"
 #include "wire/SnapshotReader.h"
 
 #include "imgui.h"
@@ -81,6 +82,17 @@ void DrawNotAttached()
     theme::EndCard();
 }
 
+void DrawNoLocalPlayer()
+{
+    if (!theme::BeginCard("ps.noplayer", "PLAYER", theme::kTextDim))
+    {
+        theme::EndCard();
+        return;
+    }
+    theme::Subheading("Attached. No local player: not in the world.");
+    theme::EndCard();
+}
+
 void DrawLocationCard(const nxt::ipc::LocalPlayer &self)
 {
     if (!theme::BeginCard("ps.loc", "LOCATION"))
@@ -99,6 +111,14 @@ void DrawLocationCard(const nxt::ipc::LocalPlayer &self)
     ImGui::Spacing();
     char idx[24];
     std::snprintf(idx, sizeof(idx), "%d", self.serverIndex);
+    // v25: leads the visual tile during a walk; -1 in all three means unreadable.
+    char serverTile[64] = "unknown";
+    if (self.serverTileX >= 0 && self.serverTileY >= 0 && self.serverPlane >= 0)
+    {
+        std::snprintf(serverTile, sizeof(serverTile), "%d, %d  p%d", self.serverTileX,
+                      self.serverTileY, int(self.serverPlane));
+    }
+    theme::KeyLine("server tile", serverTile);
     theme::KeyLine("server index", idx);
     theme::KeyLine("moving", (self.flags & nxt::ipc::kFlagMoving) ? "yes" : "no");
     theme::KeyLine("members", self.isMember ? "yes" : "no");
@@ -238,11 +258,18 @@ void DrawPlayerState(app::App &a)
     const auto *snap = a.session.IsOpen()
                            ? wire::CurrentSnapshot(a.session)
                            : nullptr;
-    if (!snap || snap->self.serverIndex < 0)
+    switch (wire::ClassifyPlayerPanel(snap))
     {
+    case wire::PlayerPanelState::NotAttached:
         DrawNotAttached();
         ImGui::End();
         return;
+    case wire::PlayerPanelState::NoLocalPlayer:
+        DrawNoLocalPlayer();
+        ImGui::End();
+        return;
+    case wire::PlayerPanelState::InWorld:
+        break;
     }
 
     DrawLocationCard(snap->self);

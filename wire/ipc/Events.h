@@ -48,6 +48,9 @@ enum EventType : uint32_t {
 
     // Action queue
     kEventActionExecuted     = 40,
+    kEventActionRefused      = 41,  // a queued action was dropped undispatched:
+                                    // its target never became clickable. No
+                                    // kEventActionExecuted follows it.
 
     // Break manager
     kEventBreakStarted       = 50,
@@ -133,6 +136,29 @@ struct ActionExecutedBody {
     int32_t param3;
 };
 static_assert(sizeof(ActionExecutedBody) <= kEventBodyMax);
+
+// kEventActionRefused. The action exactly as queued, why it was refused, which
+// anchoring it was waiting on, and how long it was held.
+//   reason      1 no_target       the target does not exist, or the action has
+//                                 none a click could land on
+//               2 anchor_timeout  the target never became clickable in time
+//               3 no_opener       stayed hidden behind a window or tab the
+//                                 agent cannot open, until the timeout
+//   anchorCase  0 none, 1 scroll, 2 open, 3 camera, 4 wait (a transient miss)
+//   heldMs      time held before the refusal; blocked and break time excluded
+// Values are permanent (game::RefuseReason / game::AnchorCase).
+struct ActionRefusedBody {
+    int32_t  actionId;
+    int32_t  param1;
+    int32_t  param2;
+    int32_t  param3;
+    uint32_t reason;
+    uint32_t anchorCase;
+    uint32_t heldMs;
+};
+static_assert(sizeof(ActionRefusedBody) == 28, "ActionRefusedBody size");
+static_assert(offsetof(ActionRefusedBody, reason) == 16, "ActionRefusedBody reason offset");
+static_assert(offsetof(ActionRefusedBody, heldMs) == 24, "ActionRefusedBody heldMs offset");
 
 // Walk events carry just the world-tile target the consumer asked for. The
 // shape is shared across walk_arrived / walk_cancelled / walk_failed (the

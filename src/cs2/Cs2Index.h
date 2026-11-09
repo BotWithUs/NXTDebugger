@@ -44,6 +44,11 @@ public:
 
     const std::wstring &Dir() const { return dir_; }
     void SetDir(const std::wstring &dir) { dir_ = dir; }
+
+    // "<dir>\<id:06d>.asm", or with isDecompiled the sibling
+    // "<dir>\..\cs2_decompiled\<id:06d>.cs2". Pure path arithmetic; the file
+    // may not exist. Usable in any status, not only Ready.
+    std::wstring ScriptFile(int id, bool isDecompiled) const;
     const std::wstring &LastError() const { return error_; }
 
     // Spawn the build worker. No-op while Building or already Ready (unless

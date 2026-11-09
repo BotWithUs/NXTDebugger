@@ -2,6 +2,7 @@
 
 #include "app/App.h"
 #include "app/Theme.h"
+#include "rpc/IntText.h"
 #include "rpc/MsgPack.h"
 #include "rpc/TapClient.h"
 
@@ -80,12 +81,8 @@ void AppendValue(std::string &out, nxt::rpc::msgpack::Reader &r, int budget)
         break;
     }
     case Type::Int:
-    {
-        int64_t v = 0; r.ReadInt(v);
-        std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v));
-        out.append(buf);
+        out.append(nxtdbg::rpc::ReadIntText(r));
         break;
-    }
     case Type::Float:
     {
         double v = 0.0; r.ReadDouble(v);
